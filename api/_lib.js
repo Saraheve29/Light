@@ -71,7 +71,7 @@ export async function addToHistory(msg) {
 }
 
 // ---------- NanoGPT ----------
-export async function callModel(model, messages, { temperature = 0.9, maxTokens = 900 } = {}) {
+export async function callModel(model, messages, { temperature = 0.9, maxTokens = 2500 } = {}) {
   if (!NANO_KEY) throw new Error('NANOGPT_API_KEY is not set in Vercel.')
   if (!model) throw new Error('No model chosen yet. Pick one in Settings.')
   const r = await fetch(NANO_CHAT_URL, {
@@ -89,9 +89,20 @@ export async function callModel(model, messages, { temperature = 0.9, maxTokens 
     const msg = data.error?.message || data.error || `status ${r.status}`
     throw new Error('NanoGPT: ' + msg)
   }
-  let reply = data.choices?.[0]?.message?.content || ''
+  const choice = data.choices?.[0] || {}
+  let reply = choice.message?.content || ''
   // Some thinking models include their private reasoning — strip it out.
   reply = reply.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
+
+  // Thinking started but never finished = he ran out of room mid-thought.
+  if (/^<think>/i.test(reply)) reply = ''
+
+  if (!reply) {
+    const thought = choice.message?.reasoning_content || choice.message?.reasoning
+    if (choice.finish_reason === 'length' || thought) {
+      throw new Error('He was still thinking when he ran out of room. This model thinks a lot before answering — try a model without "thinking", or shorten his profile.')
+    }
+  }
   return reply
 }
 
