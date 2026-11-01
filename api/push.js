@@ -1,45 +1,36 @@
-// Phone notifications for Light. Keys are created automatically and kept in Upstash.
-import webpush from 'web-push'
-import { redis, getJSON, setJSON, KEYS } from './_lib.js'
+import { checkAuth, getMsgSettings, setJSON, KEYS } from './_lib.js'
+import { getVapid, saveSubscription } from './_push.js'
 
-export async function getVapid() {
-  let keys = await getJSON(KEYS.vapid, null)
-  if (!keys?.publicKey || !keys?.privateKey) {
-    keys = webpush.generateVAPIDKeys()
-    await setJSON(KEYS.vapid, keys)
-  }
-  return keys
-}
+// GET  → notification key + message settings
+// POST → { subscription } saves this phone, { settings } saves message settings
+export default async function handler(req, res) {
+  if (!checkAuth(req, res)) return
 
-export async function saveSubscription(sub) {
-  const subs = await getJSON(KEYS.subs, [])
-  const others = subs.filter((s) => s.endpoint !== sub.endpoint)
-  await setJSON(KEYS.subs, [...others, sub].slice(-5))
-}
-
-export async function sendToAll(payload) {
-  const subs = await getJSON(KEYS.subs, [])
-  if (!subs.length) return { sent: 0, reason: 'No phone has turned on notifications yet.' }
-
-  const { publicKey, privateKey } = await getVapid()
-  webpush.setVapidDetails('mailto:light@example.com', publicKey, privateKey)
-
-  let sent = 0
-  const keep = []
-  for (const sub of subs) {
-    try {
-      await webpush.sendNotification(sub, JSON.stringify(payload), { TTL: 60 * 60 * 6 })
-      sent++
-      keep.push(sub)
-    } catch (err) {
-      // 404/410 = that phone unsubscribed; drop it. Keep others for next time.
-      if (err.statusCode !== 404 && err.statusCode !== 410) keep.push(sub)
+  try {
+    if (req.method === 'GET') {
+      const [{ publicKey }, settings] = await Promise.all([getVapid(), getMsgSettings()])
+      return res.status(200).json({ publicKey, settings })
     }
-  }
-  if (keep.length !== subs.length) await setJSON(KEYS.subs, keep)
-  return { sent }
-}
 
-export async function clearSubscriptions() {
-  await redis('DEL', KEYS.subs)
+    if (req.method === 'POST') {
+      const { subscription, settings } = req.body || {}
+      if (subscription?.endpoint) await saveSubscription(subscription)
+      if (settings && typeof settings === 'object') {
+        const current = await getMsgSettings()
+        const clean = {
+          enabled: settings.enabled ?? current.enabled,
+          perDay: Math.min(12, Math.max(1, Number(settings.perDay ?? current.perDay))),
+          quietStart: Math.min(23, Math.max(0, Number(settings.quietStart ?? current.quietStart))),
+          quietEnd: Math.min(23, Math.max(0, Number(settings.quietEnd ?? current.quietEnd))),
+          preview: settings.preview ?? current.preview,
+        }
+        await setJSON(KEYS.msgSettings, clean)
+      }
+      return res.status(200).json({ ok: true })
+    }
+
+    res.status(405).json({ error: 'Method not allowed' })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
 }
