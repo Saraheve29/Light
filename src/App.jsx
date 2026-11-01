@@ -328,6 +328,7 @@ function MessagesPanel({ pass, setStatus }) {
 
 /* ---------------- His work: tasks + journal ---------------- */
 const STATUS_LABEL = { todo: 'To do', working: 'Working on it', done: 'Done ✓' }
+const KIND_ICON = { book: '📜', web: '🔮', wiki: '📖', tarot: '🃏', poem: '🪶', news: '📰', nasa: '🌌' }
 
 function dateLabel(ts) {
   return new Date(ts).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
@@ -368,7 +369,7 @@ function WorkPanel({ pass, setStatus }) {
       const r = d.result || {}
       setStatus(
         r.did === 'task' ? (r.finishedTask ? 'He finished your task!' : 'He worked on your task.')
-          : r.did === 'reading' ? `He read about ${r.title}.`
+          : r.did === 'reading' ? `${KIND_ICON[r.kind] || '📖'} ${r.title}`
           : r.reason || 'Done.'
       )
       load()
@@ -411,7 +412,9 @@ function WorkPanel({ pass, setStatus }) {
       {journal.map((j) => (
         <div key={j.at} className="card">
           <div className="muted small">{dateLabel(j.at)}</div>
-          <a className="card-text link" href={j.url} target="_blank" rel="noreferrer">{j.topic}</a>
+          {j.url
+            ? <a className="card-text link" href={j.url} target="_blank" rel="noreferrer">{KIND_ICON[j.kind] || '📖'} {j.topic}</a>
+            : <div className="card-text link">{KIND_ICON[j.kind] || '📖'} {j.topic}</div>}
           <p className="journal-note">{j.note}</p>
         </div>
       ))}
