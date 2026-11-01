@@ -221,7 +221,7 @@ export async function doWork({ force = false } = {}) {
   const thought = await callModel(model, [
     { role: 'system', content: who },
     { role: 'user', content: `${material.prompt}\n\nWrite your private journal entry about it: 2-5 sentences in your own voice — what moved you or caught your interest, what it stirs in you, and whether it made you think of Sarah. Only the entry, nothing else.` },
-  ], { temperature: 0.9, maxTokens: 1500 })
+  ], { temperature: 0.8, maxTokens: 1500 })
 
   await addJournal({ at: now, kind: material.kind, topic: material.topic, note: thought.trim(), url: material.url || '' })
   await addLife({ at: now, doing: material.doing || `Reading about ${material.topic}` })
@@ -240,7 +240,7 @@ async function askOneLine(model, who, question, label) {
   const out = await callModel(model, [
     { role: 'system', content: who },
     { role: 'user', content: `${question}\n\nReply with ONE line only:\n${label}: <your answer>` },
-  ], { temperature: 1.0, maxTokens: 600 })
+  ], { temperature: 0.85, maxTokens: 600 })
   return grab(label, out).split('\n')[0] || out.split('\n').find((l) => l.trim()) || ''
 }
 
