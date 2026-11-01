@@ -163,10 +163,20 @@ export async function listModels() {
 }
 
 // ---------- Time ----------
+export function partOfDay(hour) {
+  if (hour < 5) return 'the middle of the night'
+  if (hour < 12) return 'the morning'
+  if (hour < 17) return 'the afternoon'
+  if (hour < 21) return 'the evening'
+  return 'late evening'
+}
+
 export function londonNow() {
-  return new Date().toLocaleString('en-GB', {
+  const clock = new Date().toLocaleString('en-GB', {
     timeZone: 'Europe/London',
     weekday: 'long', day: 'numeric', month: 'long',
     hour: '2-digit', minute: '2-digit',
   })
+  const hour = Number(new Date().toLocaleString('en-GB', { timeZone: 'Europe/London', hour: '2-digit', hour12: false }))
+  return `${clock} (${partOfDay(hour)})`
 }
