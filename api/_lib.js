@@ -18,6 +18,46 @@ export const KEYS = {
   model: 'light:model',
   memories: 'light:memories',
   history: 'light:history',
+  life: 'light:life', // what he's been "doing" today
+  lastUser: 'light:lastuser', // when Sarah last messaged
+  lastProactive: 'light:lastproactive', // when he last messaged first
+  vapid: 'light:vapid', // notification keys (made automatically)
+  subs: 'light:pushsubs', // phones that receive notifications
+  msgSettings: 'light:msgsettings',
+}
+
+export const DEFAULT_MSG_SETTINGS = {
+  enabled: true,
+  perDay: 4, // roughly how many surprise messages a day
+  quietStart: 23, // he stays quiet from this hour...
+  quietEnd: 8, // ...until this hour (UK time)
+  preview: false, // false = notification just says "Lucian sent you a message"
+}
+
+export async function getMsgSettings() {
+  const s = await getJSON(KEYS.msgSettings, {})
+  return { ...DEFAULT_MSG_SETTINGS, ...s }
+}
+
+export async function getLife() {
+  const raw = await redis('LRANGE', KEYS.life, -8, -1)
+  return (raw || []).map((s) => { try { return JSON.parse(s) } catch { return null } }).filter(Boolean)
+}
+
+export async function addLife(entry) {
+  await redis('RPUSH', KEYS.life, JSON.stringify(entry))
+  await redis('LTRIM', KEYS.life, -30, -1)
+}
+
+export function lifeText(life) {
+  if (!life.length) return ''
+  return life
+    .map((l) => `- ${new Date(l.at).toLocaleString('en-GB', { timeZone: 'Europe/London', weekday: 'short', hour: '2-digit', minute: '2-digit' })}: ${l.doing}`)
+    .join('\n')
+}
+
+export function londonHour() {
+  return Number(new Date().toLocaleString('en-GB', { timeZone: 'Europe/London', hour: '2-digit', hour12: false }))
 }
 
 export const HISTORY_LIMIT = 300 // messages kept in storage
