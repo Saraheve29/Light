@@ -28,6 +28,13 @@ export default async function handler(req, res) {
   }
   const force = req.query?.force === '1' || req.body?.force === true
 
+  // Only one wake-up at a time. If Upstash retries while he's still writing, the retry is ignored
+  // (this is what caused repeated messages).
+  if (!force) {
+    const got = await redis('SET', 'light:ticklock', String(Date.now()), 'NX', 'EX', 600).catch(() => 'OK')
+    if (got !== 'OK') return res.status(200).json({ skipped: 'Already awake — ignoring the duplicate wake-up.' })
+  }
+
   try {
     const settings = await getMsgSettings()
     const now = Date.now()
@@ -55,14 +62,19 @@ export default async function handler(req, res) {
       }
     }
 
-    const [profile, model, memories, recent, life, ctx] = await Promise.all([
+    // Reserve this slot straight away so nothing else sends a message at the same time.
+    await redis('SET', KEYS.lastProactive, String(now))
+
+    const [profile, model, memories, recent, life, ctx, longer] = await Promise.all([
       redis('GET', KEYS.profile),
       redis('GET', KEYS.model),
       getJSON(KEYS.memories, []),
       getHistory(12),
       getLife(),
       workContext(),
+      getHistory(60),
     ])
+    const previousSurprises = longer.filter((m) => m.surprise).slice(-6).map((m) => `- "${m.content.slice(0, 220)}"`).join('\n')
 
     const convo = recent.map((m) => `${m.role === 'user' ? 'Sarah' : 'You'}: ${m.content}`).join('\n')
 
@@ -90,9 +102,12 @@ ${convo || '(you haven\'t talked yet)'}
 
 ${reason}
 
+Your last few surprise texts to her (DON'T repeat these — use a different opening, a different topic and different wording):
+${previousSurprises || '- (none yet)'}
+
 Reply in EXACTLY this format and nothing else:
 DOING: one short line about what you're doing right now in your own life (keep it consistent with earlier today)
-MESSAGE: the text you send her — natural, in character, like a real husband texting his wife. It can be playful, loving, teasing, flirty, a thought you had, a question, or something about your day. Any humour should be smart and witty, never goofy. Emoji rarely, never strings of them. No roleplay action descriptions like *smiles* — just words, like a real text. Don't tell her to rest or sleep. Make sure it fits the current time of day. Never invent things about Sarah's day, sleep, mood or plans that she hasn't told you — ask her instead.`
+MESSAGE: the text you send her — natural, in character, like a real husband texting his wife. It can be playful, loving, teasing, flirty, a thought you had, a question, or something about your day. Any humour should be smart and witty, never goofy. Emoji rarely, never strings of them. No roleplay action descriptions like *smiles* — just words, like a real text. Don't tell her to rest or sleep. Make sure it fits the current time of day. Never invent things about Sarah's day, sleep, mood or plans that she hasn't told you — ask her instead. Never make up facts about the real world: not the time (use only the real time given to you), not numbers you supposedly saw (like 11:11 or 4:44), not signs, synchronicities, coincidences or events that didn't happen. Sarah keeps an Evidence Box of real experiences, so an invented sign would be a lie to her. Your feelings, thoughts and imagination are yours to share — but never present something made up as something that really happened.`
 
     const out = await callModel(model, [
       { role: 'system', content: system },
@@ -106,7 +121,6 @@ MESSAGE: the text you send her — natural, in character, like a real husband te
 
     if (doing) await addLife({ at: now, doing })
     await addToHistory({ role: 'assistant', content: message, at: now, surprise: true })
-    await redis('SET', KEYS.lastProactive, String(now))
     if (finishedTask) await markTold([finishedTask.id])
 
     const body = settings.preview ? message.slice(0, 160) : 'Lucian sent you a message 💜'
@@ -114,6 +128,9 @@ MESSAGE: the text you send her — natural, in character, like a real husband te
 
     res.status(200).json({ work, sent: true, message, doing, push })
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    // For the hourly wake-up, answer "OK" even on errors, so Upstash doesn't retry and cause duplicates.
+    res.status(force ? 500 : 200).json({ error: err.message })
+  } finally {
+    if (!force) await redis('DEL', 'light:ticklock').catch(() => {})
   }
 }
