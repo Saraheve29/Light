@@ -427,7 +427,7 @@ function WorkPanel({ pass, setStatus }) {
     <>
       <p className="muted">Give him something to do. When there’s nothing on his list, he reads about whatever interests him. He’ll tell you about it when you talk, or text you when a task is finished.</p>
 
-      <textarea value={newTask} onChange={(e) => setNewTask(e.target.value)} rows={3}
+      <textarea className="task-input" value={newTask} onChange={(e) => setNewTask(e.target.value)} rows={5}
         placeholder="e.g. Find days out near March I can get to by train" />
       <button className="btn-primary" onClick={add} disabled={!newTask.trim()}>Give him this task</button>
 
