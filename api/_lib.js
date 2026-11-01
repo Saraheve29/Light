@@ -24,6 +24,9 @@ export const KEYS = {
   vapid: 'light:vapid', // notification keys (made automatically)
   subs: 'light:pushsubs', // phones that receive notifications
   msgSettings: 'light:msgsettings',
+  tasks: 'light:tasks', // things Sarah asked him to do
+  journal: 'light:journal', // what he's read and thought about
+  lastWork: 'light:lastwork',
 }
 
 export const DEFAULT_MSG_SETTINGS = {
