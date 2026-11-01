@@ -27,6 +27,7 @@ export const KEYS = {
   tasks: 'light:tasks', // things Sarah asked him to do
   journal: 'light:journal', // what he's read and thought about
   lastWork: 'light:lastwork',
+  book: 'light:book', // the book he's reading right now
 }
 
 export const DEFAULT_MSG_SETTINGS = {
@@ -174,6 +175,21 @@ export function partOfDay(hour) {
   return 'late evening'
 }
 
+// Moon phase, calculated exactly (no website needed)
+export function moonPhase(date = new Date()) {
+  const synodic = 29.530588853
+  const knownNew = Date.UTC(2000, 0, 6, 18, 14) // a known new moon
+  const age = ((((date.getTime() - knownNew) / 86400000) % synodic) + synodic) % synodic
+  const names = [
+    [1.84566, 'New Moon'], [5.53699, 'Waxing Crescent'], [9.22831, 'First Quarter'],
+    [12.91963, 'Waxing Gibbous'], [16.61096, 'Full Moon'], [20.30228, 'Waning Gibbous'],
+    [23.99361, 'Last Quarter'], [27.68493, 'Waning Crescent'], [synodic, 'New Moon'],
+  ]
+  const name = names.find(([limit]) => age < limit)[1]
+  const illumination = Math.round(((1 - Math.cos((2 * Math.PI * age) / synodic)) / 2) * 100)
+  return { name, illumination, age: Math.round(age * 10) / 10 }
+}
+
 export function londonNow() {
   const clock = new Date().toLocaleString('en-GB', {
     timeZone: 'Europe/London',
@@ -181,5 +197,6 @@ export function londonNow() {
     hour: '2-digit', minute: '2-digit',
   })
   const hour = Number(new Date().toLocaleString('en-GB', { timeZone: 'Europe/London', hour: '2-digit', hour12: false }))
-  return `${clock} (${partOfDay(hour)})`
+  const moon = moonPhase()
+  return `${clock} (${partOfDay(hour)}). The moon is a ${moon.name}, ${moon.illumination}% lit`
 }
