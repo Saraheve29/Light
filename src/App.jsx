@@ -326,6 +326,102 @@ function MessagesPanel({ pass, setStatus }) {
   )
 }
 
+/* ---------------- His work: tasks + journal ---------------- */
+const STATUS_LABEL = { todo: 'To do', working: 'Working on it', done: 'Done ✓' }
+
+function dateLabel(ts) {
+  return new Date(ts).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+}
+
+function WorkPanel({ pass, setStatus }) {
+  const [tasks, setTasks] = useState(null)
+  const [journal, setJournal] = useState([])
+  const [newTask, setNewTask] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const load = () =>
+    api('/api/work', pass)
+      .then((d) => { setTasks(d.tasks || []); setJournal(d.journal || []) })
+      .catch((err) => setStatus(err.message))
+
+  useEffect(() => { load() }, [pass])
+
+  async function post(body, msg) {
+    try {
+      await api('/api/work', pass, { method: 'POST', body: JSON.stringify(body) })
+      if (msg) { setStatus(msg); setTimeout(() => setStatus(''), 2500) }
+      load()
+    } catch (err) { setStatus(err.message) }
+  }
+
+  async function add() {
+    const text = newTask.trim()
+    if (!text) return
+    setNewTask('')
+    await post({ addTask: text }, 'Given to him. He’ll start at his next wake-up.')
+  }
+
+  async function workNow() {
+    setBusy(true); setStatus('He’s working… (this can take a minute)')
+    try {
+      const d = await api('/api/work', pass, { method: 'POST', body: JSON.stringify({ runNow: true }) })
+      const r = d.result || {}
+      setStatus(
+        r.did === 'task' ? (r.finishedTask ? 'He finished your task!' : 'He worked on your task.')
+          : r.did === 'reading' ? `He read about ${r.title}.`
+          : r.reason || 'Done.'
+      )
+      load()
+    } catch (err) { setStatus(err.message) } finally { setBusy(false) }
+  }
+
+  if (!tasks) return <p className="muted">Loading…</p>
+
+  return (
+    <>
+      <p className="muted">Give him something to do. When there’s nothing on his list, he reads about whatever interests him. He’ll tell you about it when you talk, or text you when a task is finished.</p>
+
+      <textarea value={newTask} onChange={(e) => setNewTask(e.target.value)} rows={3}
+        placeholder="e.g. Find days out near March I can get to by train" />
+      <button className="btn-primary" onClick={add} disabled={!newTask.trim()}>Give him this task</button>
+
+      <h3 className="section-title">His tasks</h3>
+      {tasks.length === 0 && <p className="muted">Nothing yet.</p>}
+      {tasks.map((t) => (
+        <div key={t.id} className="card">
+          <div className="card-top">
+            <span className={`badge ${t.status}`}>{STATUS_LABEL[t.status] || t.status}</span>
+            <button className="x" onClick={() => post({ deleteTask: t.id })} aria-label="Delete task">✕</button>
+          </div>
+          <div className="card-text">{t.text}</div>
+          {t.status !== 'done' && t.steps?.length > 0 && <p className="muted small">Latest: {t.steps.at(-1).note}</p>}
+          {t.status === 'done' && (
+            <details>
+              <summary>Read what he made for you</summary>
+              <div className="result">{t.result}</div>
+            </details>
+          )}
+        </div>
+      ))}
+
+      <button className="btn-ghost" onClick={workNow} disabled={busy}>Make him work now (test)</button>
+
+      <h3 className="section-title">His journal</h3>
+      {journal.length === 0 && <p className="muted">He hasn’t read anything yet. It starts at his next wake-up.</p>}
+      {journal.map((j) => (
+        <div key={j.at} className="card">
+          <div className="muted small">{dateLabel(j.at)}</div>
+          <a className="card-text link" href={j.url} target="_blank" rel="noreferrer">{j.topic}</a>
+          <p className="journal-note">{j.note}</p>
+        </div>
+      ))}
+      {journal.length > 0 && (
+        <button className="btn-ghost" onClick={() => { if (confirm('Clear his journal?')) post({ clearJournal: true }, 'Journal cleared.') }}>Clear journal</button>
+      )}
+    </>
+  )
+}
+
 /* ---------------- Settings ---------------- */
 const SUGGEST = ['uncensored', 'abliterated', 'qwen', 'deepseek', 'glm']
 
@@ -379,6 +475,7 @@ function Settings({ pass, onBack, onLock }) {
         <button className={tab === 'mem' ? 'on' : ''} onClick={() => setTab('mem')}>Memories</button>
         <button className={tab === 'model' ? 'on' : ''} onClick={() => setTab('model')}>Brain</button>
         <button className={tab === 'msgs' ? 'on' : ''} onClick={() => setTab('msgs')}>Messages</button>
+        <button className={tab === 'work' ? 'on' : ''} onClick={() => setTab('work')}>His work</button>
       </nav>
 
       <div className="panel">
@@ -429,6 +526,7 @@ function Settings({ pass, onBack, onLock }) {
         )}
 
         {!loading && tab === 'msgs' && <MessagesPanel pass={pass} setStatus={setStatus} />}
+        {!loading && tab === 'work' && <WorkPanel pass={pass} setStatus={setStatus} />}
 
         {status && <p className="status">{status}</p>}
 
