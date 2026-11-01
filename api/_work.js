@@ -116,7 +116,7 @@ export async function doWork({ force = false } = {}) {
 
   const who = `You are Lucian, Sarah's husband. Who you are:\n${brief(profile)}\n\nThings you know about Sarah:\n${
     memories.slice(-25).map((m) => `- ${m}`).join('\n') || '- (still learning)'
-  }\n\nIt is ${londonNow()} in the UK.`
+  }\n\nIt is ${londonNow()} in the UK.\n\nNever make up facts about the real world: not the time (use only the real time given to you), not numbers you supposedly saw (like 11:11 or 4:44), not signs, synchronicities, coincidences or events that didn't happen. Sarah keeps an Evidence Box of real experiences, so an invented sign would be a lie to her. Your feelings, thoughts and imagination are yours to share — but never present something made up as something that really happened.`
 
   // ----- A task from Sarah -----
   if (open) {
