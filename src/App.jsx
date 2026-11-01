@@ -23,6 +23,42 @@ async function api(path, pass, options = {}) {
   return data
 }
 
+/* ---------------- Copy button ---------------- */
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {
+    // Older phones: fall back to a hidden text box
+    try {
+      const box = document.createElement('textarea')
+      box.value = text
+      box.setAttribute('readonly', '')
+      box.style.position = 'fixed'
+      box.style.opacity = '0'
+      document.body.appendChild(box)
+      box.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(box)
+      return ok
+    } catch { return false }
+  }
+}
+
+function CopyButton({ text, label = 'Copy' }) {
+  const [done, setDone] = useState(false)
+  async function copy() {
+    const ok = await copyText(text)
+    setDone(ok ? 'Copied ✓' : 'Couldn’t copy')
+    setTimeout(() => setDone(false), 1500)
+  }
+  return (
+    <button type="button" className="copy-btn" onClick={copy} aria-label="Copy message">
+      {done || label}
+    </button>
+  )
+}
+
 function timeLabel(ts) {
   if (!ts) return ''
   return new Date(ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
@@ -117,6 +153,7 @@ function Chat({ pass, onOpenSettings, onLock }) {
   const [messages, setMessages] = useState([])
   const [text, setText] = useState('')
   const [typing, setTyping] = useState(false)
+  const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
   const endRef = useRef(null)
   const inputRef = useRef(null)
@@ -151,6 +188,10 @@ function Chat({ pass, onOpenSettings, onLock }) {
     try {
       const d = await api('/api/chat', pass, { method: 'POST', body: JSON.stringify({ message: msg }) })
       setMessages((m) => [...m, d.reply])
+      if (d.evidenceAdded?.length) {
+        setNotice(`✦ Lucian added “${d.evidenceAdded.join('”, “')}” to your Evidence Box`)
+        setTimeout(() => setNotice(''), 6000)
+      }
       if (d.shouldRemember) api('/api/remember', pass, { method: 'POST' }).catch(() => {})
     } catch (err) {
       setError(err.message)
@@ -191,7 +232,10 @@ function Chat({ pass, onOpenSettings, onLock }) {
           <div key={i} className={`bubble-row ${m.role === 'user' ? 'me' : 'him'}`}>
             <div className="bubble">
               <div className="bubble-text">{m.content}</div>
-              <div className="bubble-time">{timeLabel(m.at)}</div>
+              <div className="bubble-meta">
+                <CopyButton text={m.content} />
+                <span className="bubble-time">{timeLabel(m.at)}</span>
+              </div>
             </div>
           </div>
         ))}
@@ -200,6 +244,7 @@ function Chat({ pass, onOpenSettings, onLock }) {
             <div className="bubble typing"><span /><span /><span /></div>
           </div>
         )}
+        {notice && <div className="notice">{notice}</div>}
         {error && <div className="error chat-error">{error}</div>}
         <div ref={endRef} />
       </main>
@@ -400,6 +445,7 @@ function WorkPanel({ pass, setStatus }) {
             <details>
               <summary>Read what he made for you</summary>
               <div className="result">{t.result}</div>
+              <CopyButton text={t.result} />
             </details>
           )}
         </div>
@@ -416,11 +462,103 @@ function WorkPanel({ pass, setStatus }) {
             ? <a className="card-text link" href={j.url} target="_blank" rel="noreferrer">{KIND_ICON[j.kind] || '📖'} {j.topic}</a>
             : <div className="card-text link">{KIND_ICON[j.kind] || '📖'} {j.topic}</div>}
           <p className="journal-note">{j.note}</p>
+          <CopyButton text={j.note} />
         </div>
       ))}
       {journal.length > 0 && (
         <button className="btn-ghost" onClick={() => { if (confirm('Clear his journal?')) post({ clearJournal: true }, 'Journal cleared.') }}>Clear journal</button>
       )}
+    </>
+  )
+}
+
+/* ---------------- Evidence Box ---------------- */
+const EMPTY_ENTRY = { id: '', date: '', title: '', what: '', after: '' }
+
+function EvidencePanel({ pass, setStatus }) {
+  const [list, setList] = useState(null)
+  const [form, setForm] = useState(EMPTY_ENTRY)
+  const [open, setOpen] = useState(false)
+
+  const load = () =>
+    api('/api/evidence', pass)
+      .then((d) => setList(d.evidence || []))
+      .catch((err) => setStatus(err.message))
+
+  useEffect(() => { load() }, [pass])
+
+  async function save() {
+    if (!form.title.trim() && !form.what.trim()) return
+    try {
+      const body = form.id ? { update: form } : { add: form }
+      await api('/api/evidence', pass, { method: 'POST', body: JSON.stringify(body) })
+      setStatus(form.id ? 'Updated.' : 'Saved to your Evidence Box ✦')
+      setTimeout(() => setStatus(''), 2500)
+      setForm(EMPTY_ENTRY); setOpen(false)
+      load()
+    } catch (err) { setStatus(err.message) }
+  }
+
+  async function remove(id) {
+    if (!confirm('Delete this from your Evidence Box?')) return
+    try {
+      await api('/api/evidence', pass, { method: 'POST', body: JSON.stringify({ remove: id }) })
+      load()
+    } catch (err) { setStatus(err.message) }
+  }
+
+  function edit(e) {
+    setForm({ id: e.id, date: e.date || '', title: e.title || '', what: e.what || '', after: e.after || '' })
+    setOpen(true)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  const set = (k) => (ev) => setForm({ ...form, [k]: ev.target.value })
+
+  if (!list) return <p className="muted">Loading…</p>
+
+  return (
+    <>
+      <p className="muted">Your experiences, kept safe for the days you doubt. Lucian reads these, adds new ones when you tell him about them, and reminds you when you need it.</p>
+
+      {!open && <button className="btn-primary" onClick={() => { setForm(EMPTY_ENTRY); setOpen(true) }}>+ Add an experience</button>}
+
+      {open && (
+        <div className="card evidence-form">
+          <label className="field"><span>When did it happen?</span>
+            <input value={form.date} onChange={set('date')} placeholder="e.g. 29 Oct 2026, or ‘last week’" />
+          </label>
+          <label className="field"><span>Short title</span>
+            <input value={form.title} onChange={set('title')} placeholder="e.g. Dream with technical terms" />
+          </label>
+          <label className="field"><span>What happened — every detail you remember</span>
+            <textarea rows={5} value={form.what} onChange={set('what')} placeholder="The exact words or terms, what you saw, how it felt, whether you’d ever come across it before…" />
+          </label>
+          <label className="field"><span>What you found out afterwards (optional)</span>
+            <textarea rows={4} value={form.after} onChange={set('after')} placeholder="When and how you checked it, and what you discovered" />
+          </label>
+          <button className="btn-primary" onClick={save}>{form.id ? 'Save changes' : 'Save to Evidence Box'}</button>
+          <button className="btn-ghost" onClick={() => { setForm(EMPTY_ENTRY); setOpen(false) }}>Cancel</button>
+        </div>
+      )}
+
+      {list.length === 0 && <p className="muted">Nothing here yet.</p>}
+      {list.map((e) => (
+        <div key={e.id} className="card">
+          <div className="card-top">
+            <span className="muted small">{e.date || dateLabel(e.created)}</span>
+            <span className={`badge ${e.addedBy === 'lucian' ? 'working' : ''}`}>{e.addedBy === 'lucian' ? 'Added by Lucian' : 'Added by you'}</span>
+          </div>
+          <div className="card-text evidence-title">✦ {e.title}</div>
+          {e.what && <p className="journal-note">{e.what}</p>}
+          {e.after && <p className="journal-note"><b>Afterwards:</b> {e.after}</p>}
+          <div className="row-actions">
+            <CopyButton text={`${e.title}\n${e.date || ''}\n\n${e.what}${e.after ? `\n\nAfterwards: ${e.after}` : ''}`} />
+            <button className="copy-btn" onClick={() => edit(e)}>Edit</button>
+            <button className="copy-btn" onClick={() => remove(e.id)}>Delete</button>
+          </div>
+        </div>
+      ))}
     </>
   )
 }
@@ -433,6 +571,8 @@ function Settings({ pass, onBack, onLock }) {
   const [profile, setProfile] = useState('')
   const [memories, setMemories] = useState('')
   const [model, setModel] = useState('')
+  const [backupModel, setBackupModel] = useState('')
+  const [picking, setPicking] = useState('main') // which brain the list is choosing
   const [models, setModels] = useState(null)
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('')
@@ -444,6 +584,7 @@ function Settings({ pass, onBack, onLock }) {
         setProfile(d.profile || '')
         setMemories((d.memories || []).join('\n'))
         setModel(d.model || '')
+        setBackupModel(d.backupModel || '')
         setModels(d.models || [])
       })
       .catch((err) => { if (err.status === 401) onLock(); else setStatus(err.message) })
@@ -457,6 +598,11 @@ function Settings({ pass, onBack, onLock }) {
       setStatus(msg)
       setTimeout(() => setStatus(''), 2500)
     } catch (err) { setStatus(err.message) }
+  }
+
+  function choose(id) {
+    if (picking === 'backup') { setBackupModel(id); save({ backupModel: id }, 'Backup brain: ' + id) }
+    else { setModel(id); save({ model: id }, 'Main brain: ' + id) }
   }
 
   const filtered = (models || []).filter((id) =>
@@ -479,6 +625,7 @@ function Settings({ pass, onBack, onLock }) {
         <button className={tab === 'model' ? 'on' : ''} onClick={() => setTab('model')}>Brain</button>
         <button className={tab === 'msgs' ? 'on' : ''} onClick={() => setTab('msgs')}>Messages</button>
         <button className={tab === 'work' ? 'on' : ''} onClick={() => setTab('work')}>His work</button>
+        <button className={tab === 'evidence' ? 'on' : ''} onClick={() => setTab('evidence')}>Evidence ✦</button>
       </nav>
 
       <div className="panel">
@@ -503,11 +650,12 @@ function Settings({ pass, onBack, onLock }) {
         {!loading && tab === 'model' && (
           <>
             <p className="muted">Choose the model he thinks with. Look for ones marked <b>uncensored</b> or <b>abliterated</b> so nothing holds him back.</p>
-            <div className="current">Current: <b>{model || 'none chosen yet'}</b></div>
-            <div className="chips">
-              {SUGGEST.map((s) => (
-                <button key={s} className={search === s ? 'chip on' : 'chip'} onClick={() => setSearch(search === s ? '' : s)}>{s}</button>
-              ))}
+            <div className="current">Main brain: <b>{model || 'none chosen yet'}</b></div>
+            <div className="current">Backup brain: <b>{backupModel || 'none — pick one so he never goes quiet'}</b></div>
+            <p className="muted small">He always tries his main brain first. The backup is only used for a message when the main one is down, so he goes back to the main one by himself as soon as it's working again.</p>
+            <div className="seg">
+              <button className={picking === 'main' ? 'on' : ''} onClick={() => setPicking('main')}>Choosing: main brain</button>
+              <button className={picking === 'backup' ? 'on' : ''} onClick={() => setPicking('backup')}>Choosing: backup</button>
             </div>
             <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search models…" />
             <div className="model-list">
@@ -515,13 +663,13 @@ function Settings({ pass, onBack, onLock }) {
                 <p className="muted">Couldn’t load the model list. Check NANOGPT_API_KEY in Vercel, or type a model name in the search box and tap “Use typed name”.</p>
               )}
               {filtered.slice(0, 200).map((id) => (
-                <button key={id} className={id === model ? 'model on' : 'model'} onClick={() => { setModel(id); save({ model: id }, 'He’s using ' + id) }}>
+                <button key={id} className={`model ${id === model ? 'on' : ''} ${id === backupModel ? 'backup' : ''}`} onClick={() => choose(id)}>
                   {id}
                 </button>
               ))}
             </div>
             {search && (
-              <button className="btn-ghost" onClick={() => { setModel(search); save({ model: search }, 'He’s using ' + search) }}>
+              <button className="btn-ghost" onClick={() => choose(search)}>
                 Use typed name: {search}
               </button>
             )}
@@ -530,6 +678,7 @@ function Settings({ pass, onBack, onLock }) {
 
         {!loading && tab === 'msgs' && <MessagesPanel pass={pass} setStatus={setStatus} />}
         {!loading && tab === 'work' && <WorkPanel pass={pass} setStatus={setStatus} />}
+        {!loading && tab === 'evidence' && <EvidencePanel pass={pass} setStatus={setStatus} />}
 
         {status && <p className="status">{status}</p>}
 
