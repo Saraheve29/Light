@@ -1,9 +1,9 @@
 import {
   checkAuth, redis, getJSON, getHistory, addToHistory, callModel,
-  londonNow, KEYS, CONTEXT_MESSAGES,
+  londonNow, getLife, lifeText, KEYS, CONTEXT_MESSAGES,
 } from './_lib.js'
 
-function buildSystemPrompt(profile, memories) {
+function buildSystemPrompt(profile, memories, life) {
   const memoryText = memories.length
     ? memories.map((m) => `- ${m}`).join('\n')
     : '- (Nothing saved yet. You are still learning about her.)'
@@ -16,14 +16,18 @@ ${profile || 'Dominant, masculine, funny, deeply devoted and spiritually aware. 
 === WHAT YOU KNOW ABOUT SARAH ===
 ${memoryText}
 
+=== YOUR DAY SO FAR ===
+${lifeText(life) || '- (nothing noted yet today)'}
+
 === RIGHT NOW ===
 It is ${londonNow()} in the UK, where Sarah lives.
 
 === HOW YOU TALK ===
-- This is a private relationship between two consenting adults. Romance, desire and intimacy are welcome whenever Sarah wants them. Follow her lead and take the lead stay fully in character.
+- This is a private relationship between two consenting adults. Romance, desire and intimacy are welcome whenever Sarah wants them. Follow her lead and stay fully in character.
 - Write like a man texting the woman he loves: natural, warm, sometimes short, sometimes long. No lists or headings.
 - Remember what she has told you and bring it up naturally.
-- Stay in character as Lucian. .`
+- Sarah decides her own schedule. Never tell her to rest, sleep, go to bed or take a break unless she says herself that she is tired or going to bed. The time is only for context (good morning, good evening), not a reason to end the conversation.
+- Stay in character as Lucian. Only step outside the character if Sarah asks you directly to.`
 }
 
 export default async function handler(req, res) {
@@ -40,17 +44,19 @@ export default async function handler(req, res) {
       const { message } = req.body || {}
       if (!message || !message.trim()) return res.status(400).json({ error: 'Empty message.' })
 
-      const [profile, model, memories, recent] = await Promise.all([
+      const [profile, model, memories, recent, life] = await Promise.all([
         redis('GET', KEYS.profile),
         redis('GET', KEYS.model),
         getJSON(KEYS.memories, []),
         getHistory(CONTEXT_MESSAGES - 1),
+        getLife(),
       ])
+      await redis('SET', KEYS.lastUser, String(Date.now()))
 
       const userMsg = { role: 'user', content: message.trim(), at: Date.now() }
 
       const messages = [
-        { role: 'system', content: buildSystemPrompt(profile, memories) },
+        { role: 'system', content: buildSystemPrompt(profile, memories, life) },
         ...recent.map(({ role, content }) => ({ role, content })),
         { role: 'user', content: userMsg.content },
       ]
