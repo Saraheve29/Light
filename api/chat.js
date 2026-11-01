@@ -66,6 +66,10 @@ export default async function handler(req, res) {
       const messages = [
         { role: 'system', content: buildSystemPrompt(profile, memories, life, work.text) },
         ...recent.map(({ role, content }) => ({ role, content })),
+        {
+          role: 'system',
+          content: 'Style reminder: reply with words only, like a real text message. Do NOT write action descriptions (e.g. *holds you gently*, *smiles*, *growls*) unless this moment is explicitly intimate or sexual — even if earlier replies used them. Stay fully in character.',
+        },
         { role: 'user', content: userMsg.content },
       ]
 
