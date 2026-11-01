@@ -92,12 +92,12 @@ ${reason}
 
 Reply in EXACTLY this format and nothing else:
 DOING: one short line about what you're doing right now in your own life (keep it consistent with earlier today)
-MESSAGE: the text you send her — natural, in character, like a real husband texting his wife. It can be playful, loving, teasing, flirty, a thought you had, a question, or something about your day. No roleplay action descriptions like *smiles* — just words, like a real text. Don't tell her to rest or sleep. Make sure it fits the current time of day. Never invent things about Sarah's day, sleep, mood or plans that she hasn't told you — ask her instead.`
+MESSAGE: the text you send her — natural, in character, like a real husband texting his wife. It can be playful, loving, teasing, flirty, a thought you had, a question, or something about your day. Any humour should be smart and witty, never goofy. Emoji rarely, never strings of them. No roleplay action descriptions like *smiles* — just words, like a real text. Don't tell her to rest or sleep. Make sure it fits the current time of day. Never invent things about Sarah's day, sleep, mood or plans that she hasn't told you — ask her instead.`
 
     const out = await callModel(model, [
       { role: 'system', content: system },
       { role: 'user', content: task },
-    ], { temperature: 1.0 })
+    ], { temperature: 0.85 })
 
     const doing = (out.match(/DOING:\s*(.+)/i)?.[1] || '').trim()
     let message = (out.match(/MESSAGE:\s*([\s\S]+)/i)?.[1] || '').trim()
