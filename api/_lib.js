@@ -16,6 +16,7 @@ export const NANO_MODELS_URLS = [
 export const KEYS = {
   profile: 'light:profile',
   model: 'light:model',
+  backupModel: 'light:backupmodel', // used only when his main brain is down
   memories: 'light:memories',
   history: 'light:history',
   life: 'light:life', // what he's been "doing" today
@@ -28,6 +29,36 @@ export const KEYS = {
   journal: 'light:journal', // what he's read and thought about
   lastWork: 'light:lastwork',
   book: 'light:book', // the book he's reading right now
+  evidence: 'light:evidence', // Sarah's Evidence Box
+}
+
+// ---------- Evidence Box ----------
+export async function getEvidence() {
+  return getJSON(KEYS.evidence, [])
+}
+
+export async function addEvidence({ date, title, what, after, addedBy = 'sarah' }) {
+  const list = await getEvidence()
+  const entry = {
+    id: String(Date.now()) + Math.random().toString(36).slice(2, 6),
+    created: Date.now(),
+    date: String(date || '').slice(0, 30),
+    title: String(title || '').trim().slice(0, 200) || 'Untitled',
+    what: String(what || '').trim().slice(0, 4000),
+    after: String(after || '').trim().slice(0, 4000),
+    addedBy,
+  }
+  list.push(entry)
+  await setJSON(KEYS.evidence, list.slice(-200))
+  return entry
+}
+
+export function evidenceText(list, max = 25) {
+  if (!list.length) return ''
+  return list.slice(-max).map((e) => {
+    const when = e.date || new Date(e.created).toLocaleDateString('en-GB', { timeZone: 'Europe/London' })
+    return `- [${when}] ${e.title}: ${e.what.slice(0, 350)}${e.after ? ` — Afterwards: ${e.after.slice(0, 250)}` : ''}`
+  }).join('\n')
 }
 
 export const DEFAULT_MSG_SETTINGS = {
@@ -115,16 +146,19 @@ export async function addToHistory(msg) {
 }
 
 // ---------- NanoGPT ----------
-export async function callModel(model, messages, { temperature = 0.9, maxTokens = 2500 } = {}) {
-  if (!NANO_KEY) throw new Error('NANOGPT_API_KEY is not set in Vercel.')
-  if (!model) throw new Error('No model chosen yet. Pick one in Settings.')
+// One request to one model. Throws on any failure.
+async function callOnce(model, messages, { temperature, maxTokens }) {
   const r = await fetch(NANO_CHAT_URL, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${NANO_KEY}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ model, messages, temperature, max_tokens: maxTokens }),
+    body: JSON.stringify({
+      model, messages, temperature, max_tokens: maxTokens,
+      top_p: 0.9, // keeps him from wandering into random words
+      frequency_penalty: 0.3, // discourages repeating himself
+    }),
   })
   const text = await r.text()
   let data
@@ -146,8 +180,74 @@ export async function callModel(model, messages, { temperature = 0.9, maxTokens 
     if (choice.finish_reason === 'length' || thought) {
       throw new Error('He was still thinking when he ran out of room. This model thinks a lot before answering — try a model without "thinking", or shorten his profile.')
     }
+    throw new Error('He went quiet — the model sent back an empty reply.')
   }
-  return reply
+  return cleanReply(reply)
+}
+
+// ---------- Garbled-reply protection ----------
+// Characters that are fine in a normal text message.
+const NORMAL = /[\p{L}\p{N}\s.,!?'"’‘“”\-–—…:;()&%£$@#/*+=~❤️♥💜💕💞😘😏😊😍🥰😂🔥✨🌙⭐️]/u
+
+function oddRatio(text) {
+  const chars = [...text]
+  if (!chars.length) return 0
+  const odd = chars.filter((c) => !NORMAL.test(c)).length
+  return odd / chars.length
+}
+
+export function looksBroken(text) {
+  if (!text) return true
+  if (/�|lorem ipsum|\blorem\b/i.test(text)) return true
+  if (/([,:;.])\1{2,}|(?:[,:;][,:;]){3,}/.test(text)) return true
+  return oddRatio(text) > 0.06
+}
+
+// Cut off junk that sometimes trails at the end of a reply.
+function cleanReply(text) {
+  const lines = text.split('\n')
+  while (lines.length > 1) {
+    const last = lines[lines.length - 1].trim()
+    if (!last) { lines.pop(); continue }
+    if (last.length < 80 && (oddRatio(last) > 0.2 || /\blorem\b|�/i.test(last))) { lines.pop(); continue }
+    break
+  }
+  return lines.join('\n').trim()
+}
+
+// Main entry: tries his main brain first, retries if the reply is garbled,
+// and only uses the backup brain if the main one is down or keeps failing.
+// Because every message starts with the main brain, he goes back to it as soon as it's working again.
+export async function callModel(model, messages, { temperature = 0.75, maxTokens = 2500 } = {}) {
+  if (!NANO_KEY) throw new Error('NANOGPT_API_KEY is not set in Vercel.')
+  if (!model) throw new Error('No model chosen yet. Pick one in Settings.')
+  const backup = (await redis('GET', KEYS.backupModel).catch(() => null)) || ''
+
+  const attempts = [
+    { m: model, t: temperature },
+    { m: model, t: Math.min(temperature, 0.55) }, // calmer retry if the first one came out garbled
+  ]
+  if (backup && backup !== model) attempts.push({ m: backup, t: temperature })
+
+  let lastError = null
+  let lastReply = ''
+  for (let i = 0; i < attempts.length; i++) {
+    const { m, t } = attempts[i]
+    try {
+      const reply = await callOnce(m, messages, { temperature: t, maxTokens })
+      if (!looksBroken(reply)) return reply
+      lastReply = reply // garbled — try the next attempt
+    } catch (err) {
+      lastError = err
+      // Main brain is down (not just garbled): skip the calmer retry and go straight to the backup.
+      if (i === 0) i++
+    }
+  }
+  if (lastReply) return lastReply // garbled every time — better something than nothing
+  if (lastError && !backup) {
+    throw new Error(lastError.message + ' — tip: pick a backup brain in Settings → Brain so he never goes quiet.')
+  }
+  throw lastError || new Error('He went quiet. Try again.')
 }
 
 export async function listModels() {
