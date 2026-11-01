@@ -189,3 +189,8 @@ details summary { color: var(--glow); font-size: 14px; cursor: pointer; }
 .seg button.on { background: var(--panel); color: var(--text); box-shadow: inset 0 0 0 1px var(--purple); }
 .model.backup { border-style: dashed; border-color: #5fd3a0; }
 .model.backup::after { content: '  · backup'; color: #8fe8bf; font-size: 12px; }
+
+/* ---------- Stop the settings page squashing boxes ---------- */
+.panel > * { flex-shrink: 0; }
+.task-input { min-height: 140px; resize: vertical; line-height: 1.5; }
+.evidence-form textarea { min-height: 120px; resize: vertical; }
