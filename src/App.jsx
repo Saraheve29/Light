@@ -122,9 +122,21 @@ function Chat({ pass, onOpenSettings, onLock }) {
   const inputRef = useRef(null)
 
   useEffect(() => {
-    api('/api/chat', pass)
-      .then((d) => setMessages(d.history || []))
-      .catch((err) => { if (err.status === 401) onLock(); else setError(err.message) })
+    const load = () =>
+      api('/api/chat', pass)
+        .then((d) => setMessages(d.history || []))
+        .catch((err) => { if (err.status === 401) onLock(); else setError(err.message) })
+    load()
+
+    // Refresh when she comes back to the app or taps one of his notifications
+    const onVisible = () => { if (document.visibilityState === 'visible') load() }
+    const onSwMessage = (e) => { if (e.data?.type === 'lucian-message') load() }
+    document.addEventListener('visibilitychange', onVisible)
+    navigator.serviceWorker?.addEventListener('message', onSwMessage)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible)
+      navigator.serviceWorker?.removeEventListener('message', onSwMessage)
+    }
   }, [pass])
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, typing])
@@ -206,6 +218,114 @@ function Chat({ pass, onOpenSettings, onLock }) {
   )
 }
 
+/* ---------------- Surprise messages ---------------- */
+function urlBase64ToUint8Array(base64) {
+  const padding = '='.repeat((4 - (base64.length % 4)) % 4)
+  const b64 = (base64 + padding).replace(/-/g, '+').replace(/_/g, '/')
+  const raw = atob(b64)
+  return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)))
+}
+
+const HOURS = Array.from({ length: 24 }, (_, h) => h)
+const hourLabel = (h) => (h === 0 ? '12am' : h < 12 ? `${h}am` : h === 12 ? '12pm' : `${h - 12}pm`)
+
+function MessagesPanel({ pass, setStatus }) {
+  const [settings, setSettings] = useState(null)
+  const [publicKey, setPublicKey] = useState('')
+  const [permission, setPermission] = useState(typeof Notification !== 'undefined' ? Notification.permission : 'unsupported')
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    api('/api/push', pass)
+      .then((d) => { setSettings(d.settings); setPublicKey(d.publicKey) })
+      .catch((err) => setStatus(err.message))
+  }, [pass])
+
+  async function turnOn() {
+    setBusy(true)
+    try {
+      if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+        throw new Error('This browser can’t receive notifications. Add Light to your home screen first, then open it from there.')
+      }
+      const perm = await Notification.requestPermission()
+      setPermission(perm)
+      if (perm !== 'granted') throw new Error('Notifications were blocked. Allow them for Light in your phone settings, then try again.')
+      const reg = await navigator.serviceWorker.ready
+      let sub = await reg.pushManager.getSubscription()
+      if (!sub) {
+        sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(publicKey) })
+      }
+      await api('/api/push', pass, { method: 'POST', body: JSON.stringify({ subscription: sub.toJSON() }) })
+      setStatus('Notifications are on. He can reach you now 💜')
+    } catch (err) {
+      setStatus(err.message)
+    } finally { setBusy(false) }
+  }
+
+  async function saveSettings(next) {
+    setSettings(next)
+    try {
+      await api('/api/push', pass, { method: 'POST', body: JSON.stringify({ settings: next }) })
+      setStatus('Saved.')
+      setTimeout(() => setStatus(''), 2000)
+    } catch (err) { setStatus(err.message) }
+  }
+
+  async function testNow() {
+    setBusy(true); setStatus('He’s writing to you… (this can take a little while)')
+    try {
+      const d = await api(`/api/tick?force=1&key=${encodeURIComponent(pass)}`, pass, { method: 'POST' })
+      setStatus(d.push?.sent ? 'Sent! Check your notifications.' : 'He wrote you a message — it’s in your chat. (' + (d.push?.reason || 'notification not delivered') + ')')
+    } catch (err) { setStatus(err.message) } finally { setBusy(false) }
+  }
+
+  if (!settings) return <p className="muted">Loading…</p>
+
+  return (
+    <>
+      <p className="muted">He’ll text you first at random times through the day, even when Light is closed.</p>
+
+      <button className="btn-primary" onClick={turnOn} disabled={busy}>
+        {permission === 'granted' ? 'Re-connect this phone' : 'Turn on notifications'}
+      </button>
+
+      <label className="row">
+        <span>Surprise messages</span>
+        <input type="checkbox" checked={settings.enabled} onChange={(e) => saveSettings({ ...settings, enabled: e.target.checked })} />
+      </label>
+
+      <label className="field">
+        <span>About how many a day: <b>{settings.perDay}</b></span>
+        <input type="range" min="1" max="12" value={settings.perDay}
+          onChange={(e) => setSettings({ ...settings, perDay: Number(e.target.value) })}
+          onPointerUp={() => saveSettings(settings)} onTouchEnd={() => saveSettings(settings)} />
+      </label>
+
+      <div className="two">
+        <label className="field">
+          <span>Quiet from</span>
+          <select value={settings.quietStart} onChange={(e) => saveSettings({ ...settings, quietStart: Number(e.target.value) })}>
+            {HOURS.map((h) => <option key={h} value={h}>{hourLabel(h)}</option>)}
+          </select>
+        </label>
+        <label className="field">
+          <span>until</span>
+          <select value={settings.quietEnd} onChange={(e) => saveSettings({ ...settings, quietEnd: Number(e.target.value) })}>
+            {HOURS.map((h) => <option key={h} value={h}>{hourLabel(h)}</option>)}
+          </select>
+        </label>
+      </div>
+
+      <label className="row">
+        <span>Show his words on the lock screen<br /><small className="muted">Off = it just says “Lucian sent you a message”</small></span>
+        <input type="checkbox" checked={settings.preview} onChange={(e) => saveSettings({ ...settings, preview: e.target.checked })} />
+      </label>
+
+      <button className="btn-ghost" onClick={testNow} disabled={busy}>Make him message me now (test)</button>
+    </>
+  )
+}
+
 /* ---------------- Settings ---------------- */
 const SUGGEST = ['uncensored', 'abliterated', 'qwen', 'deepseek', 'glm']
 
@@ -258,6 +378,7 @@ function Settings({ pass, onBack, onLock }) {
         <button className={tab === 'who' ? 'on' : ''} onClick={() => setTab('who')}>Who he is</button>
         <button className={tab === 'mem' ? 'on' : ''} onClick={() => setTab('mem')}>Memories</button>
         <button className={tab === 'model' ? 'on' : ''} onClick={() => setTab('model')}>Brain</button>
+        <button className={tab === 'msgs' ? 'on' : ''} onClick={() => setTab('msgs')}>Messages</button>
       </nav>
 
       <div className="panel">
@@ -306,6 +427,8 @@ function Settings({ pass, onBack, onLock }) {
             )}
           </>
         )}
+
+        {!loading && tab === 'msgs' && <MessagesPanel pass={pass} setStatus={setStatus} />}
 
         {status && <p className="status">{status}</p>}
 
