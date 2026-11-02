@@ -53,17 +53,29 @@ export function missingSetup(settings) {
 }
 
 // ---------- Zinc ----------
+// Zinc calls its key a "client token" (older docs) or an "API key" (newer docs).
+// Try the older login style first, then the newer one, so either kind of key works.
 async function zinc(path, { method = 'GET', body } = {}) {
-  const r = await fetch(`${ZINC}${path}`, {
-    method,
-    headers: {
-      Authorization: 'Basic ' + Buffer.from(`${TOKEN}:`).toString('base64'),
-      ...(body ? { 'Content-Type': 'application/json' } : {}),
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  })
-  const data = await r.json().catch(() => ({}))
-  return { status: r.status, data }
+  const key = String(TOKEN || '').trim()
+  const styles = key.startsWith('zn_')
+    ? ['Bearer ' + key, 'Basic ' + Buffer.from(`${key}:`).toString('base64')]
+    : ['Basic ' + Buffer.from(`${key}:`).toString('base64'), 'Bearer ' + key]
+  let last = { status: 0, data: {} }
+  for (const auth of styles) {
+    const r = await fetch(`${ZINC}${path}`, {
+      method,
+      headers: { Authorization: auth, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    })
+    const data = await r.json().catch(() => ({}))
+    last = { status: r.status, data }
+    const authProblem = r.status === 401 || r.status === 403 || /auth|token|unauthori[sz]ed/i.test(String(data.code || data.message || ''))
+    if (!authProblem) return last
+  }
+  if (last.status === 401 || last.status === 403) {
+    throw new Error('Zinc didn’t accept the key. Check ZINC_CLIENT_TOKEN in Vercel matches the key on your Zinc dashboard.')
+  }
+  return last
 }
 
 async function searchAmazonUK(query) {
