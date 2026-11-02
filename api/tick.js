@@ -5,6 +5,7 @@ import {
 import { sendToAll } from './_push.js'
 import { doWork, workContext, markTold } from './_work.js'
 import { giftTick } from './_gifts.js'
+import { letterTick } from './_letters.js'
 
 // Upstash wakes this up every hour.
 // 1) He spends some of his own time working on Sarah's tasks or reading what interests him.
@@ -45,6 +46,7 @@ export default async function handler(req, res) {
     let gift = null
     if (!force) {
       try { gift = await giftTick() } catch (err) { gift = { gift: 'error', reason: err.message } }
+      try { await letterTick() } catch { /* try again next hour */ }
       try { work = await doWork() } catch (err) { work = { did: 'nothing', error: err.message } }
     }
     const finishedTask = work.finishedTask || null
