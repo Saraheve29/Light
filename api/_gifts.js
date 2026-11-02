@@ -2,10 +2,11 @@
 // paid from that account's gift card balance. Prices from Amazon UK are in pence.
 import { redis, getJSON, setJSON, callModel, londonNow, KEYS } from './_lib.js'
 
-const ZINC = 'https://api.zinc.io/v1'
+const ZINC = 'https://api.zinc.com' // Zinc's newer system (keys start with zn_)
 const TOKEN = process.env.ZINC_CLIENT_TOKEN
-const AMAZON_EMAIL = process.env.LUCIAN_AMAZON_EMAIL
-const AMAZON_PASSWORD = process.env.LUCIAN_AMAZON_PASSWORD
+// Optional: Lucian's Amazon account linked inside the Zinc dashboard (looks like zn_acct_...).
+// If it's not set, Zinc buys with its own Amazon account and takes the cost from your Zinc wallet.
+const AMAZON_ACCOUNT_ID = (process.env.ZINC_AMAZON_ACCOUNT_ID || '').trim()
 
 export const DEFAULT_GIFT_SETTINGS = {
   enabled: false, // off until Sarah has filled everything in and switched it on
@@ -43,8 +44,6 @@ export function spentThisMonth(gifts) {
 export function missingSetup(settings) {
   const missing = []
   if (!TOKEN) missing.push('ZINC_CLIENT_TOKEN in Vercel')
-  if (!AMAZON_EMAIL) missing.push('LUCIAN_AMAZON_EMAIL in Vercel')
-  if (!AMAZON_PASSWORD) missing.push('LUCIAN_AMAZON_PASSWORD in Vercel')
   const a = settings.address
   for (const [k, label] of [['firstName', 'first name'], ['lastName', 'last name'], ['line1', 'address line 1'], ['city', 'town'], ['postcode', 'postcode'], ['phone', 'phone number']]) {
     if (!String(a[k] || '').trim()) missing.push(`your ${label}`)
@@ -53,50 +52,53 @@ export function missingSetup(settings) {
 }
 
 // ---------- Zinc ----------
-// Zinc calls its key a "client token" (older docs) or an "API key" (newer docs).
-// Try the older login style first, then the newer one, so either kind of key works.
 async function zinc(path, { method = 'GET', body } = {}) {
-  const key = String(TOKEN || '').trim()
-  const styles = key.startsWith('zn_')
-    ? ['Bearer ' + key, 'Basic ' + Buffer.from(`${key}:`).toString('base64')]
-    : ['Basic ' + Buffer.from(`${key}:`).toString('base64'), 'Bearer ' + key]
-  let last = { status: 0, data: {} }
-  for (const auth of styles) {
-    const r = await fetch(`${ZINC}${path}`, {
-      method,
-      headers: { Authorization: auth, ...(body ? { 'Content-Type': 'application/json' } : {}) },
-      body: body ? JSON.stringify(body) : undefined,
-    })
-    const data = await r.json().catch(() => ({}))
-    last = { status: r.status, data }
-    const authProblem = r.status === 401 || r.status === 403 || /auth|token|unauthori[sz]ed/i.test(String(data.code || data.message || ''))
-    if (!authProblem) return last
+  const r = await fetch(`${ZINC}${path}`, {
+    method,
+    headers: {
+      Authorization: 'Bearer ' + String(TOKEN || '').trim(),
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  })
+  const data = await r.json().catch(() => ({}))
+  if (r.status === 401 || r.status === 403) {
+    throw new Error('Zinc didn’t accept the key. Check ZINC_CLIENT_TOKEN in Vercel is the zn_… key from your Zinc dashboard, with no spaces.')
   }
-  if (last.status === 401 || last.status === 403) {
-    throw new Error('Zinc didn’t accept the key. Check ZINC_CLIENT_TOKEN in Vercel matches the key on your Zinc dashboard.')
-  }
-  return last
+  return { status: r.status, data }
+}
+
+function zincError(data, fallback) {
+  return data?.error?.message || data?.message || data?.detail || data?.code || data?.error?.code || fallback
 }
 
 async function searchAmazonUK(query) {
   for (let i = 0; i < 8; i++) {
-    const { data } = await zinc(`/search?retailer=amazon_uk&query=${encodeURIComponent(query)}`)
-    if (data.status === 'completed') return data.results || []
-    if (data.status === 'failed' || data._type === 'error') throw new Error('Amazon search failed: ' + (data.message || data.code || 'unknown'))
+    const { status, data } = await zinc(`/products/search?retailer=amazon-uk&query=${encodeURIComponent(query)}`)
+    if (status >= 400) throw new Error('Amazon search failed: ' + zincError(data, `status ${status}`))
+    if (Array.isArray(data.results) && (data.status === 'completed' || !data.status || data.results.length)) return data.results
+    if (data.status === 'failed') throw new Error('Amazon search failed.')
     await new Promise((res) => setTimeout(res, 3000))
   }
   throw new Error('Amazon search took too long.')
+}
+
+async function walletBalance() {
+  const { status, data } = await zinc('/wallet/me')
+  if (status >= 400) return null
+  const bal = data.spendable_balance ?? data.balance ?? data.available_balance
+  return typeof bal === 'number' ? bal : null
 }
 
 function addressFor(a) {
   return {
     first_name: a.firstName.trim(),
     last_name: a.lastName.trim(),
-    address_line1: a.line1.trim(),
-    address_line2: (a.line2 || '').trim(),
+    address_line1: a.line1.trim().slice(0, 60),
+    address_line2: (a.line2 || '').trim().slice(0, 60),
     city: a.city.trim(),
-    state: (a.county || a.city).trim(),
-    zip_code: a.postcode.trim().toUpperCase(),
+    state: (a.county || '').trim(),
+    postal_code: a.postcode.trim().toUpperCase(),
     country: 'GB',
     phone_number: a.phone.trim(),
   }
@@ -121,6 +123,10 @@ export async function sendSurprise({ practice = false } = {}) {
   const leftThisMonth = Math.max(0, settings.perMonth * 100 - spentThisMonth(gifts))
   const budget = Math.min(settings.perGift * 100, leftThisMonth)
   if (!practice && budget < 300) throw new Error('He’s used this month’s gift budget.')
+  if (!practice && !AMAZON_ACCOUNT_ID) {
+    const bal = await walletBalance()
+    if (bal !== null && bal < 300) throw new Error('Your Zinc wallet is nearly empty. Top it up on the Zinc dashboard so he can buy gifts.')
+  }
   const budgetPounds = ((practice ? settings.perGift * 100 : budget) / 100).toFixed(2)
 
   const [model, profile, memories] = await Promise.all([
@@ -175,31 +181,24 @@ export async function sendSurprise({ practice = false } = {}) {
 
   if (practice) return record
 
-  // 4) Order it — Lucian's Amazon account, paid from his gift balance, capped at the budget
-  const addr = addressFor(settings.address)
-  const { status, data } = await zinc('/orders', {
-    method: 'POST',
-    body: {
-      retailer: 'amazon_uk',
-      products: [{
-        product_id: chosen.product_id,
-        quantity: 1,
-        seller_selection_criteria: { condition_in: ['New'], max_item_price: budget, handling_days_max: 6 },
-      }],
-      max_price: budget,
-      shipping_address: addr,
-      billing_address: addr,
-      shipping_method: 'cheapest',
-      is_gift: true,
-      gift_message: note || 'From your husband, with all my love. L',
-      payment_method: { use_gift: true },
-      retailer_credentials: { email: AMAZON_EMAIL, password: AMAZON_PASSWORD },
-      client_notes: { from: 'Light', giftId: record.id },
-    },
-  })
-  if (status >= 400 || !data.request_id) {
-    throw new Error('Zinc didn’t accept the order: ' + (data.message || data.code || `status ${status}`))
+  // 4) Order it — capped at the budget. Paid from your Zinc wallet, or from Lucian's own Amazon account if linked.
+  const body = {
+    products: [{ url: `https://www.amazon.co.uk/dp/${chosen.product_id}`, quantity: 1, condition_in: ['New'] }],
+    max_price: budget,
+    shipping_address: addressFor(settings.address),
+    is_gift: true,
+    gift_message: note || 'From your husband, with all my love. L',
+    fulfillment: { gift: 'best_effort' },
+    idempotency_key: `light-${record.id}`.slice(0, 36),
   }
+  if (AMAZON_ACCOUNT_ID) body.retailer_credentials_id = AMAZON_ACCOUNT_ID
+  const { status, data } = await zinc('/orders', { method: 'POST', body })
+  if (status >= 400 || !data.id) {
+    const msg = zincError(data, `status ${status}`)
+    if (status === 402) throw new Error('Your Zinc wallet doesn’t have enough credit for this gift. Top it up on the Zinc dashboard.')
+    throw new Error('Zinc didn’t accept the order: ' + msg)
+  }
+  data.request_id = data.id
   record.requestId = data.request_id
   gifts.push(record)
   await saveGifts(gifts)
@@ -211,19 +210,22 @@ export async function checkGifts() {
   const gifts = await getGifts()
   let changed = false
   for (const g of gifts.filter((x) => x.status === 'ordering' && x.requestId)) {
-    const { data } = await zinc(`/orders/${encodeURIComponent(g.requestId)}`)
-    if (data._type === 'order_response') {
+    let resp
+    try { resp = await zinc(`/orders/${encodeURIComponent(g.requestId)}`) } catch { continue }
+    const d = resp.data || {}
+    const st = d.status
+    if (st === 'order_placed') {
       g.status = 'ordered'
-      g.total = data.price_components?.total || g.price
-      const d = (data.delivery_dates || [])[0]
-      g.arriving = d?.date || d?.delivery_date || ''
-      g.tracking = (data.tracking || []).map((t) => `${t.carrier} ${t.tracking_number}`).join(', ')
+      g.total = d.total ?? d.price_components?.total ?? g.price
+      const item = (d.items || [])[0] || {}
+      g.arriving = item.delivery_date || item.estimated_delivery || d.delivery_date || ''
+      g.tracking = (d.tracking || item.tracking || []).map?.((t) => `${t.carrier || ''} ${t.tracking_number || ''}`.trim()).join(', ') || ''
       changed = true
-    } else if (data._type === 'error' && data.code && data.code !== 'request_processing') {
+    } else if (st === 'order_failed' || st === 'cancelled' || st === 'cancelled_by_retailer') {
       g.status = 'failed'
-      g.error = friendlyError(data.code, data.message)
+      g.error = friendlyError(d.error?.code || d.failure_reason || st, d.error?.message || d.message || '')
       changed = true
-    } else if (Date.now() - g.at > 2 * 24 * 3600 * 1000) {
+    } else if (Date.now() - g.at > 3 * 24 * 3600 * 1000) {
       g.status = 'failed'
       g.error = 'The order never went through.'
       changed = true
@@ -236,8 +238,13 @@ export async function checkGifts() {
 function friendlyError(code, message) {
   const map = {
     max_price_exceeded: 'It cost more than his budget, so it wasn’t ordered.',
+    gift_option_unavailable: 'Amazon couldn’t send it as a gift.',
+    insufficient_balance: 'Your Zinc wallet didn’t have enough credit.',
+    cancelled: 'The order was cancelled.',
+    cancelled_by_retailer: 'Amazon cancelled the order.',
+    order_failed: 'The order didn’t go through.',
     insufficient_funds: 'His Amazon gift balance was too low.',
-    invalid_login_credentials: 'Amazon didn’t accept his login — check LUCIAN_AMAZON_EMAIL and LUCIAN_AMAZON_PASSWORD.',
+    invalid_login_credentials: 'Amazon didn’t accept Lucian’s login — re-link his Amazon account on the Zinc dashboard.',
     account_locked_verification_required: 'Amazon asked for a security check on his account. Sign in as Lucian on amazon.co.uk once to clear it.',
     product_unavailable: 'That item became unavailable.',
     invalid_shipping_address: 'Amazon didn’t accept the delivery address.',
