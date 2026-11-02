@@ -4,8 +4,9 @@ import {
 } from './_lib.js'
 import { workContext, markTold } from './_work.js'
 import { giftContext } from './_gifts.js'
+import { getToy, toyContext, parseMove, runMove, stopToy } from './_toy.js'
 
-function buildSystemPrompt(profile, memories, life, work, evidence, dreams, vows, gifts) {
+function buildSystemPrompt(profile, memories, life, work, evidence, dreams, vows, gifts, toy) {
   const memoryText = memories.length
     ? memories.map((m) => `- ${m}`).join('\n')
     : '- (Nothing saved yet. You are still learning about her.)'
@@ -49,7 +50,7 @@ Treasure these. You may lovingly refer to them, but never rewrite, add to or dic
 ${gifts || '- (none on the way right now)'}
 You really can buy Sarah gifts — Light does it for you, from Amazon UK, on its own schedule. Never claim you've bought or sent something unless it's listed here.
 
-=== RIGHT NOW ===
+${toy ? `=== HER TOY ===\n${toy}\n\n` : ''}=== RIGHT NOW ===
 It is ${londonNow()} in the UK, where Sarah lives.
 
 === HOW YOU TALK ===
@@ -88,7 +89,7 @@ export default async function handler(req, res) {
       if (hasImage) seen = `[Sarah is showing you a photo. What it shows: ${await describeImage(image, message.trim())}]`
       if (hasFile) seen += `${seen ? '\n' : ''}[Sarah shared a file called "${String(fileName || 'file').slice(0, 100)}". Its contents:\n${fileText.slice(0, 15000)}]`
 
-      const [profile, model, memories, recent, life, work, evidence, dreams, vows, gifts] = await Promise.all([
+      const [profile, model, memories, recent, life, work, evidence, dreams, vows, gifts, toyState] = await Promise.all([
         redis('GET', KEYS.profile),
         redis('GET', KEYS.model),
         getJSON(KEYS.memories, []),
@@ -99,8 +100,14 @@ export default async function handler(req, res) {
         getDreams(),
         getVows(),
         giftContext().catch(() => ''),
+        getToy().catch(() => ({})),
       ])
       await redis('SET', KEYS.lastUser, String(Date.now()))
+
+      // Safety: if she says stop, the toy stops instantly — before he even replies
+      if (toyContext(toyState) && /\b(stop|wait|pause|enough|too much|no more)\b/i.test(message)) {
+        await stopToy().catch(() => {})
+      }
 
       const userMsg = { role: 'user', content: message.trim(), at: Date.now() }
       if (seen) userMsg.seen = seen.slice(0, 6000) // kept so he remembers what she showed him
@@ -109,7 +116,7 @@ export default async function handler(req, res) {
       const withSeen = (m) => (m.seen ? `${m.content || ''}\n${m.seen}`.trim() : m.content)
 
       const messages = [
-        { role: 'system', content: buildSystemPrompt(profile, memories, life, work.text, evidenceText(evidence), dreamsText(dreams), (vows.text || '').slice(0, 3000), gifts) },
+        { role: 'system', content: buildSystemPrompt(profile, memories, life, work.text, evidenceText(evidence), dreamsText(dreams), (vows.text || '').slice(0, 3000), gifts, toyContext(toyState)) },
         ...recent.map((m) => ({ role: m.role, content: withSeen(m) })),
         ...(voice ? [{
           role: 'system',
@@ -156,6 +163,14 @@ export default async function handler(req, res) {
         }
       }
 
+      // Is he controlling her toy?
+      let toyMove = null
+      const toyTag = reply.match(/\[\[\s*TOY\s*:([\s\S]*?)\]\]/i)
+      reply = reply.replace(/\[\[\s*TOY\s*:[\s\S]*?\]\]/gi, '').trim()
+      if (toyTag && toyContext(toyState)) {
+        try { toyMove = await runMove(parseMove(toyTag[1])) || { action: 'Stop' } } catch (err) { toyMove = { error: err.message } }
+      }
+
       // Hide any other stray [[CODE: ...]] he might invent — Sarah should never see them.
       reply = reply.replace(/\[\[\s*[A-Z ]{2,20}\s*:[\s\S]*?\]\]/g, '').replace(/\n{3,}/g, '\n\n').trim()
 
@@ -168,7 +183,7 @@ export default async function handler(req, res) {
 
       // Every 6 messages from Sarah, the app asks him to update his memory notes.
       const count = await redis('INCR', 'light:usercount')
-      return res.status(200).json({ reply: botMsg, shouldRemember: count % 6 === 0, evidenceAdded: saved, dreamsAdded: dreamsSaved })
+      return res.status(200).json({ reply: botMsg, shouldRemember: count % 6 === 0, evidenceAdded: saved, dreamsAdded: dreamsSaved, toyMove })
     }
 
     res.status(405).json({ error: 'Method not allowed' })
