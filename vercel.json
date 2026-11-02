@@ -4,5 +4,15 @@
       "maxDuration": 300,
       "includeFiles": "node_modules/@expo-google-fonts/cormorant-garamond/*.ttf"
     }
-  }
+  },
+  "rewrites": [
+    {
+      "source": "/api/print",
+      "destination": "/api/letters?route=print"
+    },
+    {
+      "source": "/api/hear",
+      "destination": "/api/speak?route=hear"
+    }
+  ]
 }
