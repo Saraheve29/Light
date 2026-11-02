@@ -1115,7 +1115,9 @@ function CallView({ pass, onEnd }) {
 }
 
 /* ---------------- Voice settings ---------------- */
+const QWEN = 'Qwen-3-TTS-1.7B'
 const VOICE_MODELS = [
+  { id: QWEN, label: 'Qwen 3 — most natural open-source voice (make his voice below)', voices: [] },
   { id: 'Kokoro-82m', label: 'Kokoro — natural, no restrictions (recommended)', voices: ['bm_george', 'bm_lewis', 'bm_daniel', 'bm_fable', 'am_michael', 'am_adam', 'am_onyx', 'am_echo', 'am_eric', 'am_liam', 'am_fenrir', 'am_puck'] },
   { id: 'gpt-4o-mini-tts', label: 'OpenAI — very natural, describe his voice (may refuse explicit lines)', voices: ['ash', 'onyx', 'ballad', 'echo', 'verse', 'sage', 'fable', 'alloy'] },
   { id: 'Elevenlabs-Turbo-V2.5', label: 'ElevenLabs — most lifelike, costs more (may refuse explicit lines)', voices: ['Brian', 'Daniel', 'George', 'Adam', 'Bill', 'Callum', 'Charlie', 'Chris', 'Eric', 'Liam', 'Roger', 'Will'] },
@@ -1124,14 +1126,23 @@ const VOICE_LABEL = { bm_george: 'George (British)', bm_lewis: 'Lewis (British)'
 
 function VoicePanel({ pass, setStatus }) {
   const [v, setV] = useState(null)
+  const [qwen, setQwen] = useState([])
   const [busy, setBusy] = useState(false)
+  const [making, setMaking] = useState('') // progress message while a voice is being made
+  const [from, setFrom] = useState({ model: 'Kokoro-82m', voice: 'bm_george', instructions: '' })
+  const [clip, setClip] = useState(null) // { dataUrl, name }
+  const [clipText, setClipText] = useState('')
+  const [newName, setNewName] = useState('')
   const audioRef = useRef(null)
 
-  useEffect(() => {
-    api('/api/speak', pass).then((d) => setV(d.settings)).catch((err) => setStatus(err.message))
-  }, [pass])
+  function load() {
+    return api('/api/speak', pass).then((d) => { setV(d.settings); setQwen(d.qwenVoices || []) }).catch((err) => setStatus(err.message))
+  }
+  useEffect(() => { load() }, [pass])
 
-  const model = VOICE_MODELS.find((m) => m.id === v?.model) || VOICE_MODELS[0]
+  const model = VOICE_MODELS.find((m) => m.id === v?.model) || VOICE_MODELS[1]
+  const voiceOptions = v?.model === QWEN ? qwen.map((q) => ({ id: q.id, label: q.name })) : model.voices.map((id) => ({ id, label: VOICE_LABEL[id] || id }))
+  const fromModel = VOICE_MODELS.find((m) => m.id === from.model) || VOICE_MODELS[1]
 
   async function listenTo(settings) {
     setBusy(true); setStatus('Getting his voice…')
@@ -1144,15 +1155,62 @@ function VoicePanel({ pass, setStatus }) {
       }) })
       audioRef.current.src = d.audio
       await audioRef.current.play()
-      setStatus(d.fellBack ? 'That voice refused, so Kokoro spoke instead.' : '')
+      setStatus(d.fellBack ? `That voice didn’t work (${d.reason || 'refused'}), so Kokoro spoke instead.` : '')
     } catch (err) { setStatus(err.message) } finally { setBusy(false) }
   }
 
-  async function save() {
+  async function save(settings = v) {
     try {
-      await api('/api/speak', pass, { method: 'POST', body: JSON.stringify({ settings: v }) })
+      await api('/api/speak', pass, { method: 'POST', body: JSON.stringify({ settings }) })
+      setV(settings)
       setStatus('That’s his voice now 💜'); setTimeout(() => setStatus(''), 2500)
     } catch (err) { setStatus(err.message) }
+  }
+
+  function pickClip(e) {
+    const f = e.target.files?.[0]
+    e.target.value = ''
+    if (!f) return
+    if (f.size > 3 * 1024 * 1024) { setStatus('That clip is too big — use 10 to 30 seconds (under 3 MB).'); return }
+    const r = new FileReader()
+    r.onload = () => setClip({ dataUrl: r.result, name: f.name })
+    r.readAsDataURL(f)
+  }
+
+  async function makeVoice(kind) {
+    if (making) return
+    setStatus('')
+    const name = newName.trim() || (kind === 'from' ? `Lucian (${(VOICE_LABEL[from.voice] || from.voice).split(' ')[0]})` : 'Lucian')
+    const clone = kind === 'from'
+      ? { name, fromVoice: from }
+      : { name, audio: clip?.dataUrl, referenceText: clipText }
+    if (kind === 'clip' && !clip) { setStatus('Choose a voice clip first.'); return }
+    setMaking(kind === 'from' ? 'Recording a sample in his current voice…' : 'Sending the clip…')
+    try {
+      const { job } = await api('/api/speak', pass, { method: 'POST', body: JSON.stringify({ clone }) })
+      setMaking('Qwen is learning his voice… (usually under a minute)')
+      const started = Date.now()
+      while (Date.now() - started < 4 * 60000) {
+        const st = await api('/api/speak', pass, { method: 'POST', body: JSON.stringify({ cloneStatus: job }) })
+        if (st.done) {
+          await load()
+          const next = { ...v, model: QWEN, voice: st.voice.id }
+          await save(next)
+          setMaking(''); setClip(null); setClipText(''); setNewName('')
+          setStatus(`“${st.voice.name}” is ready and is his voice now 💜 Tap Listen to hear him.`)
+          return
+        }
+        await new Promise((r) => setTimeout(r, Math.min(10, Math.max(2, st.wait || 3)) * 1000))
+      }
+      throw new Error('It’s taking longer than usual. Come back in a few minutes and check the list.')
+    } catch (err) { setStatus(err.message) } finally { setMaking('') }
+  }
+
+  async function removeQwen(id) {
+    if (!window.confirm('Delete this voice?')) return
+    await api('/api/speak', pass, { method: 'POST', body: JSON.stringify({ deleteQwen: id }) }).catch((err) => setStatus(err.message))
+    if (v.model === QWEN && v.voice === id) await save({ ...v, model: 'Kokoro-82m', voice: 'bm_george' })
+    load()
   }
 
   if (!v) return <p className="muted">Loading…</p>
@@ -1164,33 +1222,95 @@ function VoicePanel({ pass, setStatus }) {
       <label className="field"><span>Voice engine</span>
         <select value={v.model} onChange={(e) => {
           const m = VOICE_MODELS.find((x) => x.id === e.target.value)
-          setV({ ...v, model: m.id, voice: m.voices[0] })
+          setV({ ...v, model: m.id, voice: m.id === QWEN ? (qwen[qwen.length - 1]?.id || '') : m.voices[0] })
         }}>
           {VOICE_MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
         </select>
       </label>
 
-      <label className="field"><span>His voice</span>
-        <select value={v.voice} onChange={(e) => setV({ ...v, voice: e.target.value })}>
-          {model.voices.map((id) => <option key={id} value={id}>{VOICE_LABEL[id] || id}</option>)}
-        </select>
-      </label>
-
-      {v.model === 'gpt-4o-mini-tts' && (
-        <label className="field"><span>Describe how he speaks</span>
-          <textarea rows={3} value={v.instructions} onChange={(e) => setV({ ...v, instructions: e.target.value })}
-            placeholder="e.g. A deep, warm Irish man. Slow, confident and tender, with a teasing smile in his voice." />
+      {v.model === QWEN && !qwen.length ? (
+        <p className="notice">You haven’t made a Qwen 3 voice yet — make one below. It takes about a minute.</p>
+      ) : (
+        <label className="field"><span>His voice</span>
+          <select value={v.voice} onChange={(e) => setV({ ...v, voice: e.target.value })}>
+            {voiceOptions.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+          </select>
         </label>
       )}
 
-      {v.model !== 'gpt-4o-mini-tts' && (
+      {(v.model === 'gpt-4o-mini-tts' || v.model === QWEN) && (
+        <label className="field"><span>{v.model === QWEN ? 'How he speaks (optional)' : 'Describe how he speaks'}</span>
+          <textarea rows={3} value={v.instructions} onChange={(e) => setV({ ...v, instructions: e.target.value })}
+            placeholder={v.model === QWEN ? 'e.g. Slow, deep and tender, a little husky, with a teasing smile.' : 'e.g. A deep, warm Irish man. Slow, confident and tender, with a teasing smile in his voice.'} />
+        </label>
+      )}
+
+      {v.model !== 'gpt-4o-mini-tts' && v.model !== QWEN && (
         <label className="field"><span>Speed: <b>{Number(v.speed).toFixed(1)}×</b></span>
           <input type="range" min="0.7" max="1.3" step="0.05" value={v.speed} onChange={(e) => setV({ ...v, speed: Number(e.target.value) })} />
         </label>
       )}
 
-      <button className="btn-ghost" onClick={() => listenTo(v)} disabled={busy}>▶ Listen</button>
-      <button className="btn-primary" onClick={save}>Use this voice</button>
+      <button className="btn-ghost" onClick={() => listenTo(v)} disabled={busy || (v.model === QWEN && !v.voice)}>▶ Listen</button>
+      <button className="btn-primary" onClick={() => save()} disabled={v.model === QWEN && !v.voice}>Use this voice</button>
+
+      <div className="qwen-box">
+        <h3>Make his Qwen 3 voice</h3>
+        <p className="muted small">Qwen 3 learns a voice from a short sample, then speaks <i>anything</i> in it with real warmth and breath. Each new voice costs about $0.25 of NanoGPT balance. You can make as many as you like and keep your favourite.</p>
+
+        {qwen.length > 0 && (
+          <div className="qwen-list">
+            {qwen.map((q) => (
+              <div key={q.id} className={`qwen-item ${v.model === QWEN && v.voice === q.id ? 'on' : ''}`}>
+                <div><b>{q.name}</b><div className="muted small">{q.from === 'clip' ? 'From your clip' : `From ${q.from}`} · {new Date(q.at).toLocaleDateString('en-GB')}</div></div>
+                <div className="qwen-actions">
+                  <button className="copy-btn" disabled={busy} onClick={() => listenTo({ ...v, model: QWEN, voice: q.id })}>▶</button>
+                  <button className="copy-btn" onClick={() => save({ ...v, model: QWEN, voice: q.id })}>Use</button>
+                  <button className="copy-btn" onClick={() => removeQwen(q.id)}>✕</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <label className="field"><span>Name for the new voice (optional)</span>
+          <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="e.g. Lucian — deep" />
+        </label>
+
+        <h4>Way 1 — start from one of his voices</h4>
+        <p className="muted small">Light records him reading a short loving passage in the voice you pick, and Qwen learns it — same sound, but far more natural.</p>
+        <label className="field"><span>Start from</span>
+          <select value={from.model} onChange={(e) => { const m = VOICE_MODELS.find((x) => x.id === e.target.value); setFrom({ ...from, model: m.id, voice: m.voices[0] }) }}>
+            {VOICE_MODELS.filter((m) => m.id !== QWEN).map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+          </select>
+        </label>
+        <label className="field"><span>Voice</span>
+          <select value={from.voice} onChange={(e) => setFrom({ ...from, voice: e.target.value })}>
+            {fromModel.voices.map((id) => <option key={id} value={id}>{VOICE_LABEL[id] || id}</option>)}
+          </select>
+        </label>
+        {from.model === 'gpt-4o-mini-tts' && (
+          <label className="field"><span>Describe how he speaks</span>
+            <textarea rows={2} value={from.instructions} onChange={(e) => setFrom({ ...from, instructions: e.target.value })} placeholder="e.g. A deep, warm British man, slow and tender." />
+          </label>
+        )}
+        <div className="row">
+          <button className="btn-ghost" disabled={busy} onClick={() => listenTo(from)}>▶ Hear this one first</button>
+          <button className="btn-primary" disabled={!!making} onClick={() => makeVoice('from')}>Make his voice from this</button>
+        </div>
+
+        <h4>Way 2 — from a voice clip</h4>
+        <p className="muted small">10–30 seconds of one man speaking clearly, no music (MP3, M4A or WAV). Only use a voice you have the right to use — not a celebrity or a real person who hasn’t agreed.</p>
+        <label className="btn-ghost file-pick">🎵 {clip ? clip.name : 'Choose a clip'}
+          <input type="file" accept="audio/*" hidden onChange={pickClip} />
+        </label>
+        <label className="field"><span>What’s said in the clip (optional — makes it more accurate)</span>
+          <textarea rows={2} value={clipText} onChange={(e) => setClipText(e.target.value)} />
+        </label>
+        <button className="btn-primary" disabled={!!making || !clip} onClick={() => makeVoice('clip')}>Make his voice from this clip</button>
+
+        {making && <p className="notice">⏳ {making}</p>}
+      </div>
     </>
   )
 }
