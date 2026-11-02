@@ -771,6 +771,64 @@ function VowsPanel({ pass, setStatus }) {
   )
 }
 
+/* ---------------- Speaking long replies ---------------- */
+// Split his words into short pieces (by sentence) so even very long replies are spoken in full,
+// and he starts talking sooner.
+function splitForSpeech(text, max = 450) {
+  const clean = String(text || '').replace(/\[\[[\s\S]*?\]\]/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!clean) return []
+  const sentences = clean.match(/[^.!?…]+[.!?…]+["”’')\]]*\s*|[^.!?…]+$/g) || [clean]
+  const pieces = []
+  let cur = ''
+  for (const s of sentences) {
+    if ((cur + s).length > max && cur) { pieces.push(cur.trim()); cur = '' }
+    if (s.length > max) {
+      // a very long sentence — split at commas or spaces
+      let rest = s
+      while (rest.length > max) {
+        let cut = rest.lastIndexOf(',', max)
+        if (cut < max * 0.5) cut = rest.lastIndexOf(' ', max)
+        if (cut <= 0) cut = max
+        pieces.push(rest.slice(0, cut + 1).trim())
+        rest = rest.slice(cut + 1)
+      }
+      cur += rest
+    } else cur += s
+  }
+  if (cur.trim()) pieces.push(cur.trim())
+  return pieces
+}
+
+// Speak pieces one after another on one audio player. Fetches the next piece while the current one plays.
+// Returns a controller with stop(). Calls onDone() when finished (not when stopped).
+function speakPieces({ pass, audio, text, onStart, onDone, onError }) {
+  const pieces = splitForSpeech(text)
+  let stopped = false
+  const fetchPiece = (i) => api('/api/speak', pass, { method: 'POST', body: JSON.stringify({ text: pieces[i] }) }).then((v) => v.audio).catch((err) => { throw err })
+  const run = async () => {
+    if (!pieces.length) return onDone?.()
+    let next = fetchPiece(0)
+    for (let i = 0; i < pieces.length; i++) {
+      let src
+      try { src = await next } catch (err) { if (!stopped) onError?.(err); return }
+      if (stopped) return
+      if (i + 1 < pieces.length) next = fetchPiece(i + 1)
+      if (!src) continue
+      await new Promise((resolve) => {
+        audio.onended = resolve
+        audio.onerror = resolve
+        audio.src = src
+        if (i === 0) onStart?.()
+        audio.play().catch((err) => { if (!stopped) onError?.(err); resolve() })
+      })
+      if (stopped) return
+    }
+    if (!stopped) onDone?.()
+  }
+  run()
+  return { stop() { stopped = true; try { audio.pause() } catch {} } }
+}
+
 /* ---------------- Hands-free call ---------------- */
 // Tap Call once: you talk, he answers out loud, then he listens again — no typing needed.
 function CallView({ pass, onEnd }) {
@@ -783,6 +841,7 @@ function CallView({ pass, onEnd }) {
   const audioRef = useRef(null)
   const pausedRef = useRef(false)
   const blockedRef = useRef(false)
+  const [blockedText, setBlockedText] = useState('')
 
   const Recognition = typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition)
 
@@ -801,41 +860,77 @@ function CallView({ pass, onEnd }) {
       activeRef.current = false
       try { recRef.current?.abort() } catch {}
       try { audioRef.current?.pause() } catch {}
+      speakingRef.current?.stop()
     }
   }, [])
 
+  // Keeps listening for as long as she talks. Sends after a real pause (~2.5s of silence),
+  // or straight away when she taps the glow. Restarts itself if the phone cuts listening off.
+  const SILENCE_MS = 2500
+  const heardRef = useRef('')
+  const silenceRef = useRef(null)
+  const sendingRef = useRef(false)
+
+  function finishTurn() {
+    clearTimeout(silenceRef.current)
+    const text = heardRef.current.trim()
+    if (!text || sendingRef.current) return
+    sendingRef.current = true
+    try { recRef.current?.abort() } catch {}
+    respond(text)
+  }
+
   function listen() {
     if (!activeRef.current || pausedRef.current) return
+    sendingRef.current = false
+    heardRef.current = ''
     setPhase('listening'); setHeard(''); setError('')
-    const rec = new Recognition()
-    recRef.current = rec
-    rec.lang = 'en-GB'
-    rec.interimResults = true
-    rec.continuous = false
-    let finalText = ''
-    rec.onresult = (e) => {
-      let interim = ''
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const t = e.results[i][0].transcript
-        if (e.results[i].isFinal) finalText += t
-        else interim += t
+    let committed = '' // text from earlier listening sessions in this turn
+
+    const startSession = () => {
+      if (!activeRef.current || pausedRef.current || sendingRef.current) return
+      const rec = new Recognition()
+      recRef.current = rec
+      rec.lang = 'en-GB'
+      rec.interimResults = true
+      rec.continuous = true
+      let session = ''
+      rec.onresult = (e) => {
+        // Some phones repeat earlier words in each result — keep only the longest version of each phrase
+        const finals = []
+        let interim = ''
+        for (let i = 0; i < e.results.length; i++) {
+          const t = e.results[i][0].transcript.trim()
+          if (e.results[i].isFinal) {
+            const last = finals[finals.length - 1]
+            if (last && t.toLowerCase().startsWith(last.toLowerCase())) finals[finals.length - 1] = t
+            else if (!last || !last.toLowerCase().endsWith(t.toLowerCase())) finals.push(t)
+          } else interim += ' ' + t
+        }
+        session = finals.join(' ')
+        heardRef.current = `${committed} ${session} ${interim}`.replace(/\s+/g, ' ').trim()
+        setHeard(heardRef.current)
+        clearTimeout(silenceRef.current)
+        silenceRef.current = setTimeout(finishTurn, SILENCE_MS)
       }
-      setHeard((finalText + ' ' + interim).trim())
-    }
-    rec.onerror = (e) => {
-      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-        setPhase('error'); setError('Light needs permission to use your microphone. Allow it in your phone settings, then call again.')
-        activeRef.current = false
+      rec.onerror = (e) => {
+        if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+          setPhase('error'); setError('Light needs permission to use your microphone. Allow it in your phone settings, then call again.')
+          activeRef.current = false
+        }
       }
+      rec.onend = () => {
+        if (!activeRef.current || pausedRef.current || sendingRef.current) return
+        // The phone stopped listening on its own — keep what she said and carry on listening
+        committed = `${committed} ${session}`.replace(/\s+/g, ' ').trim()
+        setTimeout(startSession, 150)
+      }
+      try { rec.start() } catch { setTimeout(startSession, 500) }
     }
-    rec.onend = () => {
-      if (!activeRef.current || pausedRef.current) return
-      const text = finalText.trim()
-      if (text) respond(text)
-      else setTimeout(listen, 250) // heard nothing — keep listening
-    }
-    try { rec.start() } catch { setTimeout(listen, 500) }
+    startSession()
   }
+
+  const speakingRef = useRef(null)
 
   async function respond(text) {
     setPhase('thinking')
@@ -844,15 +939,12 @@ function CallView({ pass, onEnd }) {
       if (!activeRef.current) return
       const reply = d.reply?.content || ''
       setSaid(reply)
-      const v = await api('/api/speak', pass, { method: 'POST', body: JSON.stringify({ text: reply }) })
-      if (!activeRef.current) return
-      if (!v.audio) return listen()
-      setPhase('speaking')
-      const a = audioRef.current
-      a.src = v.audio
-      a.onended = () => listen()
-      a.onerror = () => listen()
-      await a.play().catch(() => { blockedRef.current = true; pausedRef.current = true; setError('Tap the glow to hear him.'); setPhase('paused') })
+      speakingRef.current = speakPieces({
+        pass, audio: audioRef.current, text: reply,
+        onStart: () => setPhase('speaking'),
+        onDone: () => listen(),
+        onError: () => { blockedRef.current = true; pausedRef.current = true; setError('Tap the glow to hear him.'); setPhase('paused'); setBlockedText(reply) },
+      })
     } catch (err) {
       if (!activeRef.current) return
       setError(err.message)
@@ -863,10 +955,12 @@ function CallView({ pass, onEnd }) {
   // Tap the glow: interrupt him / pause / carry on
   function tapOrb() {
     if (phase === 'speaking') {
-      audioRef.current.pause()
+      speakingRef.current?.stop()
       listen()
     } else if (phase === 'listening') {
+      if (heardRef.current.trim()) { finishTurn(); return } // she's finished — send now
       pausedRef.current = true
+      clearTimeout(silenceRef.current)
       try { recRef.current?.abort() } catch {}
       setPhase('paused')
     } else if (phase === 'paused') {
@@ -875,14 +969,18 @@ function CallView({ pass, onEnd }) {
       if (blockedRef.current) {
         // The phone blocked his voice from auto-playing — this tap lets it play
         blockedRef.current = false
-        setPhase('speaking')
-        audioRef.current.play().catch(() => listen())
+        speakingRef.current = speakPieces({
+          pass, audio: audioRef.current, text: blockedText,
+          onStart: () => setPhase('speaking'), onDone: () => listen(), onError: () => listen(),
+        })
       } else listen()
     }
   }
 
   function end() {
     api('/api/toy', pass, { method: 'POST', body: JSON.stringify({ stop: true }) }).catch(() => {})
+    clearTimeout(silenceRef.current)
+    speakingRef.current?.stop()
     activeRef.current = false
     try { recRef.current?.abort() } catch {}
     try { audioRef.current?.pause() } catch {}
@@ -904,7 +1002,7 @@ function CallView({ pass, onEnd }) {
         {phase === 'speaking' && said && <p className="he-said">{said}</p>}
         {error && <p className="error">{error}</p>}
       </div>
-      <p className="muted small call-hint">Just talk. Tap the glow to interrupt him or pause.</p>
+      <p className="muted small call-hint">Talk as long as you like — he answers after a pause. Tap the glow when you’ve finished, or to interrupt him.</p>
       <button className="btn-ghost call-toy-stop" onClick={() => api('/api/toy', pass, { method: 'POST', body: JSON.stringify({ stop: true }) }).catch(() => {})}>■ Stop toy</button>
       <button className="end-call" onClick={end}>End call</button>
     </div>
@@ -1284,7 +1382,7 @@ function LettersPanel({ pass, setStatus }) {
   const audioRef = useRef(null)
 
   const load = () => api('/api/letters', pass).then((d) => { setData(d); setOpen((o) => o || d.letters[0]?.id || null) }).catch((err) => setStatus(err.message))
-  useEffect(() => { load(); return () => audioRef.current?.pause() }, [pass])
+  useEffect(() => { load(); return () => { audioRef.current?.pause(); speakRef.current?.stop() } }, [pass])
 
   async function toggleOn(enabled) {
     await api('/api/letters', pass, { method: 'POST', body: JSON.stringify({ settings: { enabled } }) }).catch((err) => setStatus(err.message))
@@ -1299,18 +1397,20 @@ function LettersPanel({ pass, setStatus }) {
     } catch (err) { setStatus(err.message) } finally { setBusy(false) }
   }
 
-  async function listen(l) {
-    if (playing === l.id) { audioRef.current?.pause(); setPlaying(''); return }
+  const speakRef = useRef(null)
+
+  function listen(l) {
+    if (playing === l.id) { speakRef.current?.stop(); setPlaying(''); return }
+    speakRef.current?.stop()
     if (!audioRef.current) audioRef.current = new Audio()
     audioRef.current.play().catch(() => {})
     setPlaying(l.id); setStatus('Getting his voice…')
-    try {
-      const v = await api('/api/speak', pass, { method: 'POST', body: JSON.stringify({ text: `${l.title}. ${l.body}` }) })
-      audioRef.current.src = v.audio
-      audioRef.current.onended = () => setPlaying('')
-      await audioRef.current.play()
-      setStatus('')
-    } catch (err) { setStatus(err.message); setPlaying('') }
+    speakRef.current = speakPieces({
+      pass, audio: audioRef.current, text: `${l.title}. ${l.body}`,
+      onStart: () => setStatus(''),
+      onDone: () => setPlaying(''),
+      onError: (err) => { setStatus(err.message || 'Couldn’t play his voice.'); setPlaying('') },
+    })
   }
 
   if (!data) return <p className="muted">Loading…</p>
