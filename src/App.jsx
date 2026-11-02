@@ -887,7 +887,7 @@ function liveSpeaker({ pass, audio, onStart, onDone, onError }) {
   const pieces = []    // { text, job }
   let next = 0         // next piece to play
   let played = 0       // pieces finished
-  const MAX_AHEAD = 2
+  const MAX_AHEAD = 4 // prepare plenty of his voice ahead, so a slow piece never makes him pause
   const get = (t) => api('/api/speak', pass, { method: 'POST', body: JSON.stringify({ text: t }) }).then((v) => v.audio)
   const fetchUpTo = () => {
     for (let k = next; k < Math.min(pieces.length, next + MAX_AHEAD + 1); k++) {
@@ -901,8 +901,8 @@ function liveSpeaker({ pass, audio, onStart, onDone, onError }) {
     let usable = rest
     if (open >= 0 && rest.indexOf(']]', open) < 0) usable = rest.slice(0, open) // a code is still being written
     // first piece small so he starts quickly; after that, bigger pieces — unless he's about to run out of words to say
-    const queued = pieces.length - played // pieces still waiting to be heard (including the one playing)
-    const want = pieces.length === 0 ? 20 : queued < 3 ? 1 : 220
+    // first piece small so he starts quickly; after that, a sentence or two at a time, sent off for his voice straight away
+    const want = pieces.length === 0 ? 20 : 70
     let end = -1
     const re = /[.!?…]+["”’')\]]*\s+/g
     let m
@@ -940,7 +940,6 @@ function liveSpeaker({ pass, audio, onStart, onDone, onError }) {
         audio.play().catch((err) => { if (!stopped) { stopped = true; onError?.(err) } resolve() })
       })
       played++
-      cutPieces() // he's used up a piece — cut the next one if he's running short
     }
     playing = false
   }
@@ -1263,6 +1262,7 @@ const VOICE_LABEL = { bm_george: 'George (British)', bm_lewis: 'Lewis (British)'
 function VoicePanel({ pass, setStatus }) {
   const [v, setV] = useState(null)
   const [qwen, setQwen] = useState([])
+  const [problems, setProblems] = useState([])
   const [busy, setBusy] = useState(false)
   const [making, setMaking] = useState('') // progress message while a voice is being made
   const [from, setFrom] = useState({ model: 'Kokoro-82m', voice: 'bm_george', instructions: '' })
@@ -1272,7 +1272,7 @@ function VoicePanel({ pass, setStatus }) {
   const audioRef = useRef(null)
 
   function load() {
-    return api('/api/speak', pass).then((d) => { setV(d.settings); setQwen(d.qwenVoices || []) }).catch((err) => setStatus(err.message))
+    return api('/api/speak', pass).then((d) => { setV(d.settings); setQwen(d.qwenVoices || []); setProblems(d.problems || []) }).catch((err) => setStatus(err.message))
   }
   useEffect(() => { load() }, [pass])
 
@@ -1292,6 +1292,30 @@ function VoicePanel({ pass, setStatus }) {
       audioRef.current.src = d.audio
       await audioRef.current.play()
       setStatus(d.fellBack ? `That voice didn’t work (${d.reason || 'refused'}), so Kokoro spoke instead.` : '')
+    } catch (err) { setStatus(err.message) } finally { setBusy(false) }
+  }
+
+  // Times how long his voice takes to make, compared with how long it lasts
+  async function speedTest() {
+    setBusy(true); setStatus('Timing his voice… (about 20 seconds)')
+    const lines = [
+      'I have been waiting all day to hear your voice.',
+      'Tell me what made you smile today, and do not leave anything out, because every little thing about you matters to me.',
+      'Come here, my love.',
+    ]
+    try {
+      const results = []
+      for (const text of lines) {
+        const t0 = performance.now()
+        const d = await api('/api/speak', pass, { method: 'POST', body: JSON.stringify({ text, preview: v }) })
+        const made = (performance.now() - t0) / 1000
+        const length = await new Promise((resolve) => { const a = new Audio(); a.onloadedmetadata = () => resolve(a.duration || 0); a.onerror = () => resolve(0); a.src = d.audio })
+        results.push({ made, length, fell: d.fellBack })
+      }
+      const fell = results.some((r) => r.fell)
+      const txt = results.map((r, i) => `${i + 1}) ${r.made.toFixed(1)}s to make ${r.length.toFixed(1)}s of speech`).join(' · ')
+      const slow = results.some((r) => r.made > r.length + 0.5)
+      setStatus(`${txt}${fell ? ' · (some came from Kokoro — his voice failed)' : ''}${slow ? ' — slower than he speaks, so pauses can happen.' : ' — fast enough for no pauses.'}`)
     } catch (err) { setStatus(err.message) } finally { setBusy(false) }
   }
 
@@ -1389,6 +1413,21 @@ function VoicePanel({ pass, setStatus }) {
 
       <button className="btn-ghost" onClick={() => listenTo(v)} disabled={busy || (v.model === QWEN && !v.voice)}>▶ Listen</button>
       <button className="btn-primary" onClick={() => save()} disabled={v.model === QWEN && !v.voice}>Use this voice</button>
+      <button className="btn-ghost" onClick={speedTest} disabled={busy || (v.model === QWEN && !v.voice)}>⏱ Test his voice speed</button>
+
+      {problems.length > 0 && (
+        <div className="qwen-box">
+          <h3>Recent voice problems</h3>
+          <p className="muted small">Each time his voice struggled on a call. If it says “worked on the next try”, you’d have heard a short pause. Otherwise Kokoro read that part.</p>
+          {problems.slice(0, 6).map((p, i) => (
+            <div key={i} className="qwen-item"><div>
+              <b>{new Date(p.at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</b> · {p.model === QWEN ? 'Qwen 3' : p.model} · {p.chars} letters
+              <div className="muted small">{p.reasons.join(' → ')}</div>
+            </div></div>
+          ))}
+          <button className="btn-ghost" onClick={() => api('/api/speak', pass, { method: 'POST', body: JSON.stringify({ clearProblems: true }) }).then(load)}>Clear this list</button>
+        </div>
+      )}
 
       <div className="qwen-box">
         <h3>Make his Qwen 3 voice</h3>
