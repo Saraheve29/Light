@@ -208,7 +208,7 @@ textarea.vows { font-family: var(--serif); font-size: 19px; line-height: 1.6; mi
 .call-name { font-family: var(--serif); font-size: 40px; font-weight: 600; letter-spacing: 0.03em; }
 .call-status { color: var(--muted); font-size: 15px; min-height: 20px; }
 .call-orb { width: 190px; height: 190px; margin: 26px 0; border: none; cursor: pointer; }
-.call-orb.listening { animation: breathe 3s ease-in-out infinite; }
+.call-orb.listening { animation: breathe 3s ease-in-out infinite; box-shadow: 0 0 calc(50px + 90px * var(--lvl, 0)) rgba(180, 130, 255, calc(0.35 + 0.5 * var(--lvl, 0))); transition: box-shadow 0.08s linear; }
 .call-orb.thinking { animation: breathe 1.2s ease-in-out infinite; opacity: 0.85; }
 .call-orb.speaking { animation: speak 0.7s ease-in-out infinite; box-shadow: 0 0 90px rgba(180, 130, 255, 0.8), 0 0 180px rgba(120, 60, 220, 0.5); }
 .call-orb.paused, .call-orb.error, .call-orb.starting { animation: none; opacity: 0.45; }
