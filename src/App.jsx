@@ -1319,7 +1319,7 @@ function ToyPanel({ pass, setStatus }) {
 
   return (
     <>
-      <p className="muted">Let Lucian control your Lovense toy during intimate moments. He starts gently and builds slowly. Every command stops by itself within a minute, and <b>■ Stop toy</b> is always on screen.</p>
+      <p className="muted">Let Lucian control your Lovense toy during intimate moments. He starts gently and builds slowly. Each command stops by itself after the time you choose below, saying “stop” stops it instantly, and <b>■ Stop toy</b> is always on screen.</p>
 
       {!t.hasDevToken && (
         <div className="card warn">
@@ -1354,6 +1354,14 @@ function ToyPanel({ pass, setStatus }) {
           <label className="row">
             <span>Let Lucian control my toy</span>
             <input type="checkbox" checked={!!t.allowed} onChange={(e) => post({ allowed: e.target.checked }, e.target.checked ? 'He has control 💜' : 'Control switched off.')} />
+          </label>
+
+          <label className="field">
+            <span>Longest a single command can run: <b>{Math.round((t.maxSeconds || 300) / 60)} min</b></span>
+            <input type="range" min="1" max="10" step="1" value={Math.round((t.maxSeconds || 300) / 60)}
+              onChange={(e) => setT({ ...t, maxSeconds: Number(e.target.value) * 60 })}
+              onPointerUp={(e) => post({ maxSeconds: Number(e.currentTarget.value) * 60 }, 'Saved.')}
+              onTouchEnd={(e) => post({ maxSeconds: Number(e.currentTarget.value) * 60 }, 'Saved.')} />
           </label>
 
           {t.ready && (
