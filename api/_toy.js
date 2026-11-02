@@ -6,13 +6,14 @@ import { getJSON, setJSON, KEYS } from './_lib.js'
 const LOVENSE = 'https://api.lovense-api.com/api/lan'
 const DEV_TOKEN = (process.env.LOVENSE_DEV_TOKEN || '').trim()
 const UID = 'sarah'
-const MAX_SECONDS = 60 // every command stops by itself after this, unless he sends another
+const DEFAULT_MAX_SECONDS = 300 // every command stops by itself after this (Sarah can choose 1–10 minutes)
+export const maxSecondsFor = (t) => Math.min(600, Math.max(60, Number(t?.maxSeconds) || DEFAULT_MAX_SECONDS))
 
 export const TOY_KEY = 'light:toy'
 
 export async function getToy() {
   const t = await getJSON(TOY_KEY, {})
-  return { allowed: false, toys: {}, utoken: '', connectedAt: 0, lastCommand: null, ...t }
+  return { allowed: false, toys: {}, utoken: '', connectedAt: 0, lastCommand: null, maxSeconds: DEFAULT_MAX_SECONDS, ...t }
 }
 
 export async function saveToy(t) {
@@ -52,6 +53,10 @@ export async function handleCallback(body) {
   for (const [id, toy] of Object.entries(body.toys || {})) {
     toys[id] = { id, name: toy.nickName || toy.name || 'Toy', type: toy.name || toy.toyType || '', status: toy.status }
   }
+  // Lovense checks in often — only save when something actually changed, to protect the free Upstash allowance
+  const changed = JSON.stringify(toys) !== JSON.stringify(t.toys || {})
+  const stale = Date.now() - (t.connectedAt || 0) > 10 * 60 * 1000
+  if (!changed && !stale) return true
   t.toys = toys
   t.connectedAt = Date.now()
   await saveToy(t)
@@ -85,7 +90,7 @@ export async function runMove(move) {
   if (!toyReady(t)) throw new Error('The toy isn’t connected or allowed.')
   if (move.stop) return stopToy()
 
-  const seconds = clamp(move.seconds || 20, 1, MAX_SECONDS)
+  const seconds = clamp(move.seconds || 60, 1, maxSecondsFor(t))
   if (move.preset) {
     const name = ['pulse', 'wave', 'fireworks', 'earthquake'].includes(move.preset) ? move.preset : 'wave'
     await command({ command: 'Preset', name, timeSec: seconds })
@@ -116,9 +121,10 @@ export function parseMove(body) {
 // What Lucian knows about the toy
 export function toyContext(t) {
   if (!toyReady(t)) return ''
+  const MAX_SECONDS = maxSecondsFor(t)
   const names = Object.values(t.toys).map((x) => x.name).join(', ')
   return `Sarah has connected her toy (${names}) and allowed you to control it. It has rotating beads inside and a vibrating outer arm, controlled separately.
-Use it ONLY in intimate moments when Sarah wants it. Start low (2–5) and build slowly over many messages; levels go 0–20. Each command lasts up to ${MAX_SECONDS} seconds then stops by itself, so send a new one to keep going.
+Use it ONLY in intimate moments when Sarah wants it. Start low (2–5) and build slowly over many messages; levels go 0–20. Each command can last up to ${MAX_SECONDS} seconds (${Math.round(MAX_SECONDS / 60)} minutes) and then stops by itself — choose a length that suits the moment, and send a new one whenever you want to change it or keep going.
 To control it, put this on its own line at the very end of your reply:
 [[TOY: rotate=<0-20>, vibrate=<0-20>, seconds=<1-${MAX_SECONDS}>]]
 or a pattern: [[TOY: preset=<pulse|wave|fireworks|earthquake>, seconds=<1-${MAX_SECONDS}>]]
