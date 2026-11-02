@@ -18,6 +18,16 @@ export const QWEN = 'Qwen-3-TTS-1.7B'
 const QWEN_LIST = 'light:qwenvoices'
 const embKey = (id) => `light:qwenemb:${id}`
 async function qwenVoices() { return getJSON(QWEN_LIST, []) }
+
+// When his voice fails, Light writes down why (shown in Voice 🎙️) so it can be fixed
+const PROBLEMS = 'light:voiceproblems'
+async function noteProblem(model, reasons, chars) {
+  try {
+    const list = await getJSON(PROBLEMS, [])
+    list.push({ at: Date.now(), model, chars, reasons: reasons.map((r) => String(r).slice(0, 220)) })
+    await setJSON(PROBLEMS, list.slice(-12))
+  } catch {}
+}
 const publicVoice = (q) => ({ id: q.id, name: q.name, at: q.at, from: q.from })
 
 // A ~25 second script for making a voice from one of his current voices
@@ -47,14 +57,15 @@ async function tts({ model, voice, speed, instructions }, text) {
   if (model === QWEN) {
     const q = (await qwenVoices()).find((x) => x.id === voice)
     if (!q) throw new Error('That Qwen voice can’t be found — make or choose one in Voice 🎙️.')
-    const body = {
-      text, model,
-      speaker_voice_embedding_file_url: `${APP_URL}/api/speak?emb=${q.id}&s=${q.secret}&f=voice.safetensors`,
-      language: 'English',
-    }
+    const ours = `${APP_URL}/api/speak?emb=${q.id}&s=${q.secret}&f=voice.safetensors`
+    const body = { text, model, language: 'English' }
     if (q.referenceText) body.reference_text = q.referenceText
     if (instructions) body.prompt = instructions
-    return ttsRequest(body, model)
+    // NanoGPT's own copy of his voice print is quickest to load — use it while it's still kept (6 days), then Light's copy
+    if (q.falUrl && Date.now() - (q.falAt || 0) < 6 * 86400000) {
+      try { return await ttsRequest({ ...body, speaker_voice_embedding_file_url: q.falUrl }, model) } catch (err) { if (err.refused) throw err }
+    }
+    return ttsRequest({ ...body, speaker_voice_embedding_file_url: ours }, model)
   }
   const body = { text, model, voice }
   if (model !== 'gpt-4o-mini-tts' && speed) body.speed = speed
@@ -88,7 +99,8 @@ async function ttsRequest(body, model) {
 
   // Some voices (ElevenLabs) take a moment — wait for them
   if (data.runId) {
-    for (let i = 0; i < 25; i++) {
+    const tries = model === QWEN ? 75 : 25 // Qwen can take longer — wait up to a minute
+    for (let i = 0; i < tries; i++) {
       await new Promise((res) => setTimeout(res, 800))
       const s = await fetch(`https://api.nano-gpt.com/api/tts/status?runId=${encodeURIComponent(data.runId)}&model=${encodeURIComponent(data.model || model)}`, {
         headers: { 'x-api-key': KEY },
@@ -137,7 +149,7 @@ async function checkClone(job) {
     const secret = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
     await redis('SET', embKey(id), buf.toString('base64'))
     const list = await qwenVoices()
-    const q = { id, secret, name: String(job.name || 'His voice').slice(0, 40), referenceText: String(job.referenceText || '').slice(0, 1000), from: job.from || 'clip', at: Date.now() }
+    const q = { id, secret, falUrl: d.speakerEmbeddingUrl, falAt: Date.now(), name: String(job.name || 'His voice').slice(0, 40), referenceText: String(job.referenceText || '').slice(0, 1000), from: job.from || 'clip', at: Date.now() }
     list.push(q)
     await setJSON(QWEN_LIST, list)
     return { done: true, voice: publicVoice(q) }
@@ -168,7 +180,7 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === 'GET') {
-      return res.status(200).json({ settings: await getVoice(), qwenVoices: (await qwenVoices()).map(publicVoice) })
+      return res.status(200).json({ settings: await getVoice(), qwenVoices: (await qwenVoices()).map(publicVoice), problems: (await getJSON(PROBLEMS, [])).reverse() })
     }
 
     if (req.method === 'POST') {
@@ -196,6 +208,7 @@ export default async function handler(req, res) {
       if (cloneStatus && typeof cloneStatus === 'object') {
         return res.status(200).json(await checkClone(cloneStatus))
       }
+      if (req.body?.clearProblems) { await setJSON(PROBLEMS, []); return res.status(200).json({ ok: true }) }
       if (deleteQwen) {
         const list = await qwenVoices()
         await setJSON(QWEN_LIST, list.filter((x) => x.id !== deleteQwen))
@@ -230,14 +243,17 @@ export default async function handler(req, res) {
       try {
         // If his voice is just busy or slow, try it again (up to 3 times) — only a real refusal switches voice
         let audio, lastErr
+        const reasons = []
         for (let attempt = 0; attempt < 3 && !audio; attempt++) {
           try { audio = await tts(v, words) } catch (err) {
             lastErr = err
+            reasons.push(err.message)
             if (err.refused || /balance|insufficient|credit|can’t be found/i.test(err.message)) break
             await new Promise((r) => setTimeout(r, 700 * (attempt + 1)))
           }
         }
-        if (!audio) throw lastErr
+        if (!audio) { if (!preview) await noteProblem(v.model, reasons, words.length); throw lastErr }
+        if (reasons.length && !preview) await noteProblem(v.model, [...reasons, 'worked on the next try'], words.length)
         return res.status(200).json({ audio, voiceUsed: v.model })
       } catch (err) {
         // Chosen voice refused or failed → Kokoro (open-source, no filter) reads it instead
