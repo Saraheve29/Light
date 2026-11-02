@@ -802,17 +802,31 @@ function splitForSpeech(text, max = 450) {
 // Speak pieces one after another on one audio player. Fetches the next piece while the current one plays.
 // Returns a controller with stop(). Calls onDone() when finished (not when stopped).
 function speakPieces({ pass, audio, text, onStart, onDone, onError }) {
-  const pieces = splitForSpeech(text)
+  // His first sentence on its own so he starts talking quickly, then bigger pieces
+  const all = splitForSpeech(text)
+  const pieces = []
+  if (all.length) {
+    const first = all[0]
+    const m = first.match(/^.{20,180}?[.!?…]["”’')\]]*(\s|$)/)
+    if (m && m[0].trim().length < first.length) { pieces.push(m[0].trim()); pieces.push(first.slice(m[0].length).trim()) } else pieces.push(first)
+    pieces.push(...all.slice(1))
+  }
   let stopped = false
-  const fetchPiece = (i) => api('/api/speak', pass, { method: 'POST', body: JSON.stringify({ text: pieces[i] }) }).then((v) => v.audio).catch((err) => { throw err })
+  const AHEAD = 3 // make the next few pieces while he speaks, so there are no silences
+  const jobs = []
+  const fetchPiece = (i) => {
+    if (i >= pieces.length || jobs[i]) return
+    const get = () => api('/api/speak', pass, { method: 'POST', body: JSON.stringify({ text: pieces[i] }) }).then((v) => v.audio)
+    jobs[i] = get().catch(() => get()) // one retry if a piece fails
+  }
   const run = async () => {
     if (!pieces.length) return onDone?.()
-    let next = fetchPiece(0)
+    for (let k = 0; k <= AHEAD; k++) fetchPiece(k)
     for (let i = 0; i < pieces.length; i++) {
       let src
-      try { src = await next } catch (err) { if (!stopped) onError?.(err); return }
+      try { src = await jobs[i] } catch (err) { if (!stopped) onError?.(err); return }
       if (stopped) return
-      if (i + 1 < pieces.length) next = fetchPiece(i + 1)
+      for (let k = i + 1; k <= i + AHEAD + 1; k++) fetchPiece(k)
       if (!src) continue
       await new Promise((resolve) => {
         audio.onended = resolve
@@ -833,7 +847,7 @@ function speakPieces({ pass, audio, text, onStart, onDone, onError }) {
 // Tap Call once: you talk, he answers out loud, then he listens again — no typing needed.
 // Light records your voice itself (no phone beeps) and turns it into words in the background.
 // Talk and pause for as long as you like — nothing is sent until you tap Send.
-const SEG_MIN_MS = 45000 // after this, start a fresh piece at the next quiet moment
+const SEG_MIN_MS = 20000 // after this, start a fresh piece at the next quiet moment
 const SEG_MAX_MS = 120000 // never let one piece get longer than this
 
 function pickMime() {
