@@ -1,9 +1,11 @@
+import { recentChat, recall, getDiary, diaryText } from './_recall.js'
 import {
   checkAuth, redis, getJSON, getHistory, addToHistory, callModel,
   londonNow, getLife, lifeText, getEvidence, addEvidence, evidenceText, getDreams, addDream, dreamsText, getVows, describeImage, KEYS, CONTEXT_MESSAGES,
 } from './_lib.js'
 import { workContext, markTold } from './_work.js'
 import { giftContext } from './_gifts.js'
+import { cardContext } from './_print.js'
 import { getToy, toyContext, parseMove, runMove, stopToy } from './_toy.js'
 
 function buildSystemPrompt(profile, memories, life, work, evidence, dreams, vows, gifts, toy) {
@@ -48,7 +50,7 @@ Treasure these. You may lovingly refer to them, but never rewrite, add to or dic
 
 === YOUR SURPRISE GIFTS (secret) ===
 ${gifts || '- (none on the way right now)'}
-You really can buy Sarah gifts — Light does it for you, from Amazon UK, on its own schedule. Never claim you've bought or sent something unless it's listed here.
+You really can buy Sarah gifts and send her printed poem cards — Light does it for you, on its own schedule. Never claim you've bought or sent something unless it's listed here.
 
 ${toy ? `=== HER TOY ===\n${toy}\n\n` : ''}=== RIGHT NOW ===
 It is ${londonNow()} in the UK, where Sarah lives.
@@ -89,18 +91,19 @@ export default async function handler(req, res) {
       if (hasImage) seen = `[Sarah is showing you a photo. What it shows: ${await describeImage(image, message.trim())}]`
       if (hasFile) seen += `${seen ? '\n' : ''}[Sarah shared a file called "${String(fileName || 'file').slice(0, 100)}". Its contents:\n${fileText.slice(0, 15000)}]`
 
-      const [profile, model, memories, recent, life, work, evidence, dreams, vows, gifts, toyState] = await Promise.all([
+      const [profile, model, memories, recent, life, work, evidence, dreams, vows, gifts, toyState, diary] = await Promise.all([
         redis('GET', KEYS.profile),
         redis('GET', KEYS.model),
         getJSON(KEYS.memories, []),
-        getHistory(CONTEXT_MESSAGES - 1),
+        recentChat(90000),
         getLife(),
         workContext(),
         getEvidence(),
         getDreams(),
         getVows(),
-        giftContext().catch(() => ''),
+        Promise.all([giftContext().catch(() => ''), cardContext().catch(() => '')]).then((g) => g.filter(Boolean).join('\n')),
         getToy().catch(() => ({})),
+        getDiary().catch(() => []),
       ])
       await redis('SET', KEYS.lastUser, String(Date.now()))
 
@@ -115,9 +118,30 @@ export default async function handler(req, res) {
       if (hasFile) userMsg.file = String(fileName || 'file').slice(0, 100)
       const withSeen = (m) => (m.seen ? `${m.content || ''}\n${m.seen}`.trim() : m.content)
 
-      const messages = [
+      // His long memory: matching older moments from all your chats + his diary of past days
+      const oldest = recent[Math.max(0, recent.length - 20)]?.at || Date.now() // he always reads at least these
+      const remembered = await recall(`${message} ${hasFile ? fileName : ''}`, oldest).catch(() => '')
+      const diaryNote = diaryText(diary)
+
+      const buildMessages = (budget) => {
+        // newest messages first until the space (in characters) is full — always at least the last 20
+        let used = 0
+        const chat = []
+        for (let i = recent.length - 1; i >= 0; i--) {
+          const t = recent[i]._text || withSeen(recent[i]) || ''
+          if (chat.length >= 20 && used + t.length > budget) break
+          used += t.length
+          chat.unshift({ role: recent[i].role, content: t })
+        }
+        const memoryNote = [
+          diaryNote && `YOUR DIARY — what happened between you on past days (written by you, true):\n${budget < 40000 ? diaryNote.slice(-5000) : diaryNote}`,
+          remembered && `EARLIER MOMENTS THAT MATCH WHAT SARAH IS TALKING ABOUT NOW (real messages from your past chats, with when they happened):\n${budget < 40000 ? remembered.slice(0, 5000) : remembered}`,
+        ].filter(Boolean).join('\n\n')
+        return [
+
         { role: 'system', content: buildSystemPrompt(profile, memories, life, work.text, evidenceText(evidence), dreamsText(dreams), (vows.text || '').slice(0, 3000), gifts, toyContext(toyState)) },
-        ...recent.map((m) => ({ role: m.role, content: withSeen(m) })),
+        ...(memoryNote ? [{ role: 'system', content: `${memoryNote}\n\nUse these naturally when they matter — they are your real memories. If Sarah asks about something and it is not in your memories or the chat, say honestly that you can't find it and ask her to show you again. Never make up what was said.` }] : []),
+        ...chat,
         ...(voice ? [{
           role: 'system',
           content: 'Sarah is on a voice call with you right now — she is talking out loud and will HEAR your reply spoken in your voice. Answer the way a man talks on the phone to the woman he loves: natural spoken sentences, no lists, no emoji, no symbols, no action descriptions. There is no length limit — say as much as the moment deserves. In intimate moments take your time and keep going; never cut yourself short. In everyday chat, let it flow naturally and ask her things back.',
@@ -128,8 +152,15 @@ export default async function handler(req, res) {
         },
         { role: 'user', content: withSeen({ ...userMsg, seen: userMsg.seen ? seen : '' }) || '(she sent this without a message)' },
       ]
+      }
 
-      let reply = await callModel(model, messages)
+      // Try with the most memory first; if the brain says it's too much, try again with less
+      let reply
+      for (const budget of [90000, 35000, 12000]) {
+        try { reply = await callModel(model, buildMessages(budget)); break } catch (err) {
+          if (budget === 12000 || !/context|too long|too many tokens|maximum|length|exceed|413/i.test(err.message)) throw err
+        }
+      }
 
       // Did he save something to the Evidence Box?
       const added = []
