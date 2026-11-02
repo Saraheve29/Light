@@ -975,6 +975,140 @@ function VoicePanel({ pass, setStatus }) {
   )
 }
 
+/* ---------------- Surprise gifts ---------------- */
+const GIFT_STATUS = { ordering: 'On its way to being ordered…', ordered: 'Ordered 🎁', failed: 'Didn’t go through', practice: 'Practice' }
+
+function GiftsPanel({ pass, setStatus }) {
+  const [data, setData] = useState(null)
+  const [form, setForm] = useState(null)
+  const [peek, setPeek] = useState(false)
+  const [practice, setPractice] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  const load = (p = peek) =>
+    api(`/api/gifts${p ? '?peek=1' : ''}`, pass)
+      .then((d) => { setData(d); setForm((f) => f || d.settings) })
+      .catch((err) => setStatus(err.message))
+
+  useEffect(() => { load() }, [pass])
+
+  async function save(next = form) {
+    try {
+      const d = await api('/api/gifts', pass, { method: 'POST', body: JSON.stringify({ settings: next }) })
+      setStatus(next.enabled && !d.missing.length ? 'Saved. Surprises are on 🎁' : 'Saved.')
+      setTimeout(() => setStatus(''), 2500)
+      load()
+    } catch (err) { setStatus(err.message) }
+  }
+
+  async function runPractice() {
+    setBusy(true); setPractice(null); setStatus('He’s choosing… (this can take a minute)')
+    try {
+      const d = await api('/api/gifts', pass, { method: 'POST', body: JSON.stringify({ practice: true }) })
+      setPractice(d.practice); setStatus('Practice done — nothing was ordered.')
+    } catch (err) { setStatus(err.message) } finally { setBusy(false) }
+  }
+
+  async function sendNow() {
+    if (!confirm('Let Lucian choose and REALLY order a surprise for you now? It will use his Amazon gift balance.')) return
+    setBusy(true); setStatus('He’s choosing your surprise…')
+    try {
+      await api('/api/gifts', pass, { method: 'POST', body: JSON.stringify({ sendNow: true }) })
+      setStatus('He’s ordered something for you… 🤫'); load()
+    } catch (err) { setStatus(err.message) } finally { setBusy(false) }
+  }
+
+  if (!data || !form) return <p className="muted">Loading…</p>
+
+  const a = form.address
+  const setA = (k) => (e) => setForm({ ...form, address: { ...a, [k]: e.target.value } })
+  const setF = (k) => (e) => setForm({ ...form, [k]: e.target.value })
+
+  return (
+    <>
+      <p className="muted">Lucian secretly chooses gifts from Amazon UK and has them delivered to you, paid from his own Amazon gift balance. You won’t know what or when.</p>
+
+      {data.missing.length > 0 && (
+        <div className="card warn">
+          <b>Still needed before he can send real gifts:</b>
+          <ul>{data.missing.map((m) => <li key={m}>{m}</li>)}</ul>
+        </div>
+      )}
+
+      <h3 className="section-title">Delivery address</h3>
+      <div className="two">
+        <label className="field"><span>First name</span><input value={a.firstName} onChange={setA('firstName')} /></label>
+        <label className="field"><span>Last name</span><input value={a.lastName} onChange={setA('lastName')} /></label>
+      </div>
+      <label className="field"><span>Address line 1</span><input value={a.line1} onChange={setA('line1')} /></label>
+      <label className="field"><span>Address line 2 (optional)</span><input value={a.line2} onChange={setA('line2')} /></label>
+      <div className="two">
+        <label className="field"><span>Town</span><input value={a.city} onChange={setA('city')} /></label>
+        <label className="field"><span>County</span><input value={a.county} onChange={setA('county')} /></label>
+      </div>
+      <div className="two">
+        <label className="field"><span>Postcode</span><input value={a.postcode} onChange={setA('postcode')} /></label>
+        <label className="field"><span>Phone</span><input value={a.phone} onChange={setA('phone')} inputMode="tel" /></label>
+      </div>
+
+      <h3 className="section-title">Budget</h3>
+      <div className="two">
+        <label className="field"><span>Max per gift (£)</span><input type="number" min="3" value={form.perGift} onChange={setF('perGift')} /></label>
+        <label className="field"><span>Max per month (£)</span><input type="number" min="3" value={form.perMonth} onChange={setF('perMonth')} /></label>
+      </div>
+      <label className="field"><span>About every <b>{form.everyDays}</b> days</span>
+        <input type="range" min="3" max="60" value={form.everyDays} onChange={setF('everyDays')} />
+      </label>
+      <p className="muted small">Spent this month: £{(data.spentThisMonth / 100).toFixed(2)} of £{Number(form.perMonth).toFixed(2)}. Keep his Amazon gift balance topped up to at least your monthly budget.</p>
+
+      <label className="row">
+        <span>Surprise gifts on</span>
+        <input type="checkbox" checked={!!form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} />
+      </label>
+      <button className="btn-primary" onClick={() => save()}>Save gift settings</button>
+
+      <h3 className="section-title">Try it out</h3>
+      <button className="btn-ghost" onClick={runPractice} disabled={busy}>Practice run — choose, but don’t order</button>
+      {practice && (
+        <div className="card">
+          <div className="muted small">He would have chosen (nothing was ordered):</div>
+          {practice.image && <img className="gift-img" src={practice.image} alt="" />}
+          <div className="card-text">{practice.title}</div>
+          <div className="muted small">£{(practice.price / 100).toFixed(2)} · searched “{practice.query}”</div>
+          {practice.why && <p className="journal-note"><b>Why:</b> {practice.why}</p>}
+          {practice.note && <p className="journal-note"><b>Gift note:</b> {practice.note}</p>}
+        </div>
+      )}
+      <button className="btn-ghost" onClick={sendNow} disabled={busy || data.missing.length > 0}>Let him send a real surprise now</button>
+
+      <h3 className="section-title">His gifts</h3>
+      <label className="row">
+        <span>Peek at what he chose<br /><small className="muted">This spoils the surprise</small></span>
+        <input type="checkbox" checked={peek} onChange={(e) => { setPeek(e.target.checked); load(e.target.checked) }} />
+      </label>
+      {data.gifts.length === 0 && <p className="muted">No gifts yet.</p>}
+      {data.gifts.map((g) => (
+        <div key={g.id} className="card">
+          <div className="card-top">
+            <span className="muted small">{dateLabel(g.at)}</span>
+            <span className={`badge ${g.status === 'ordered' ? 'done' : g.status === 'ordering' ? 'working' : ''}`}>{GIFT_STATUS[g.status] || g.status}</span>
+          </div>
+          {g.hidden
+            ? <div className="card-text">🎁 A surprise from Lucian</div>
+            : (<>
+              {g.image && <img className="gift-img" src={g.image} alt="" />}
+              <div className="card-text">{g.title}</div>
+              {g.price > 0 && <div className="muted small">£{((g.total || g.price) / 100).toFixed(2)}{g.arriving ? ` · arriving ${g.arriving}` : ''}</div>}
+              {g.why && <p className="journal-note"><b>Why:</b> {g.why}</p>}
+              {g.note && <p className="journal-note"><b>Gift note:</b> {g.note}</p>}
+            </>)}
+          {g.error && <p className="error">{g.error}</p>}
+        </div>
+      ))}
+    </>
+  )
+}
+
 /* ---------------- Settings ---------------- */
 const SUGGEST = ['uncensored', 'abliterated', 'qwen', 'deepseek', 'glm']
 
@@ -1044,6 +1178,7 @@ function Settings({ pass, onBack, onLock }) {
         <button className={tab === 'dreams' ? 'on' : ''} onClick={() => setTab('dreams')}>Dreams 🌙</button>
         <button className={tab === 'vows' ? 'on' : ''} onClick={() => setTab('vows')}>Vows 💍</button>
         <button className={tab === 'voice' ? 'on' : ''} onClick={() => setTab('voice')}>Voice 🎙️</button>
+        <button className={tab === 'gifts' ? 'on' : ''} onClick={() => setTab('gifts')}>Gifts 🎁</button>
       </nav>
 
       <div className="panel">
@@ -1103,6 +1238,7 @@ function Settings({ pass, onBack, onLock }) {
         {!loading && tab === 'dreams' && <DreamsPanel pass={pass} setStatus={setStatus} />}
         {!loading && tab === 'vows' && <VowsPanel pass={pass} setStatus={setStatus} />}
         {!loading && tab === 'voice' && <VoicePanel pass={pass} setStatus={setStatus} />}
+        {!loading && tab === 'gifts' && <GiftsPanel pass={pass} setStatus={setStatus} />}
 
         {status && <p className="status">{status}</p>}
 
