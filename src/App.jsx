@@ -984,6 +984,7 @@ function GiftsPanel({ pass, setStatus }) {
   const [peek, setPeek] = useState(false)
   const [practice, setPractice] = useState(null)
   const [busy, setBusy] = useState(false)
+  const [newShop, setNewShop] = useState('')
 
   const load = (p = peek) =>
     api(`/api/gifts${p ? '?peek=1' : ''}`, pass)
@@ -999,6 +1000,28 @@ function GiftsPanel({ pass, setStatus }) {
       setTimeout(() => setStatus(''), 2500)
       load()
     } catch (err) { setStatus(err.message) }
+  }
+
+  async function testShops(domains) {
+    setBusy(true); setStatus('Checking with Zinc…')
+    try {
+      await save(form) // save first so new shops are included
+      const d = await api('/api/gifts', pass, { method: 'POST', body: JSON.stringify({ testShops: domains || true }) })
+      setForm((f) => ({ ...f, shops: d.shops }))
+      const ok = d.shops.filter((x) => x.status === 'ok').length
+      setStatus(`${ok} of ${d.shops.length} shops work for him.`)
+    } catch (err) { setStatus(err.message) } finally { setBusy(false) }
+  }
+
+  function addShop() {
+    const domain = newShop.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0]
+    if (!domain || form.shops.some((x) => x.domain === domain)) return
+    setForm({ ...form, shops: [...form.shops, { domain, name: domain, status: 'untested', note: '' }] })
+    setNewShop('')
+  }
+
+  function removeShop(domain) {
+    setForm({ ...form, shops: form.shops.filter((x) => x.domain !== domain) })
   }
 
   async function runPractice() {
@@ -1050,6 +1073,39 @@ function GiftsPanel({ pass, setStatus }) {
         <label className="field"><span>Postcode</span><input value={a.postcode} onChange={setA('postcode')} /></label>
         <label className="field"><span>Phone</span><input value={a.phone} onChange={setA('phone')} inputMode="tel" /></label>
       </div>
+
+      <h3 className="section-title">What he should know</h3>
+      <label className="field"><span>Things I’d love</span>
+        <textarea rows={3} value={form.loves || ''} onChange={setF('loves')} placeholder="e.g. adult toys, beauty, perfume, bath sets, makeup" />
+      </label>
+      <label className="field"><span>Please never buy me</span>
+        <textarea rows={2} value={form.never || ''} onChange={setF('never')} placeholder="e.g. stones, crystals — separate with commas" />
+      </label>
+
+      <h3 className="section-title">Where he can shop</h3>
+      <p className="muted small">Amazon UK always works. He can also use any shop below that passes the test.</p>
+      <div className="card">
+        <div className="card-top"><span className="card-text">Amazon UK</span><span className="badge done">Works ✓</span></div>
+      </div>
+      {(form.shops || []).map((x) => (
+        <div key={x.domain} className="card">
+          <div className="card-top">
+            <span className="card-text">{x.name}</span>
+            <span className={`badge ${x.status === 'ok' ? 'done' : x.status === 'failed' ? 'bad' : ''}`}>{x.status === 'ok' ? 'Works ✓' : x.status === 'failed' ? 'Doesn’t work' : 'Not tested yet'}</span>
+          </div>
+          <div className="muted small">{x.domain}</div>
+          {x.note && <div className="muted small">{x.note}</div>}
+          <div className="row-actions">
+            <button className="copy-btn" onClick={() => testShops([x.domain])} disabled={busy}>Test</button>
+            <button className="copy-btn" onClick={() => removeShop(x.domain)}>Remove</button>
+          </div>
+        </div>
+      ))}
+      <div className="two">
+        <input value={newShop} onChange={(e) => setNewShop(e.target.value)} placeholder="Add a shop, e.g. shopname.co.uk" />
+        <button className="btn-ghost" onClick={addShop}>+ Add</button>
+      </div>
+      <button className="btn-ghost" onClick={() => testShops()} disabled={busy}>Test all shops</button>
 
       <h3 className="section-title">Budget</h3>
       <div className="two">
