@@ -188,12 +188,15 @@ function Chat({ pass, onOpenSettings, onLock, onCall }) {
   const [typing, setTyping] = useState(false)
   const [notice, setNotice] = useState('')
   const [attachment, setAttachment] = useState(null)
+  const [toyOn, setToyOn] = useState(false)
+  const [toyActive, setToyActive] = useState(false)
   const fileRef = useRef(null)
   const [error, setError] = useState('')
   const endRef = useRef(null)
   const inputRef = useRef(null)
 
   useEffect(() => {
+    api('/api/toy', pass).then((t) => setToyOn(!!t.ready)).catch(() => {})
     const load = () =>
       api('/api/chat', pass)
         .then((d) => setMessages(d.history || []))
@@ -230,6 +233,12 @@ function Chat({ pass, onOpenSettings, onLock, onCall }) {
       const notes = []
       if (d.evidenceAdded?.length) notes.push(`✦ Lucian added “${d.evidenceAdded.join('”, “')}” to your Evidence Box`)
       if (d.dreamsAdded?.length) notes.push(`🌙 Lucian wrote down your dream “${d.dreamsAdded.join('”, “')}”`)
+      if (d.toyMove?.error) notes.push('💜 ' + d.toyMove.error)
+      else if (d.toyMove) {
+        const stopped = d.toyMove.action === 'Stop'
+        setToyActive(!stopped)
+        notes.push(stopped ? '💜 Lucian stopped your toy' : '💜 Lucian is in control')
+      }
       if (notes.length) {
         setNotice(notes.join(' · '))
         setTimeout(() => setNotice(''), 6000)
@@ -306,6 +315,12 @@ function Chat({ pass, onOpenSettings, onLock, onCall }) {
         <div ref={endRef} />
       </main>
 
+      {toyOn && (
+        <div className="toy-bar">
+          <span className="muted small">{toyActive ? '💜 Your toy is on' : '💜 Toy connected'}</span>
+          <button type="button" className="toy-stop" onClick={() => { api('/api/toy', pass, { method: 'POST', body: JSON.stringify({ stop: true }) }).catch(() => {}); setToyActive(false) }}>■ Stop toy</button>
+        </div>
+      )}
       {attachment && (
         <div className="attach-preview">
           {attachment.kind === 'image' ? <img src={attachment.thumb} alt="" /> : <span className="attach-file">📄 {attachment.name}</span>}
@@ -867,6 +882,7 @@ function CallView({ pass, onEnd }) {
   }
 
   function end() {
+    api('/api/toy', pass, { method: 'POST', body: JSON.stringify({ stop: true }) }).catch(() => {})
     activeRef.current = false
     try { recRef.current?.abort() } catch {}
     try { audioRef.current?.pause() } catch {}
@@ -889,6 +905,7 @@ function CallView({ pass, onEnd }) {
         {error && <p className="error">{error}</p>}
       </div>
       <p className="muted small call-hint">Just talk. Tap the glow to interrupt him or pause.</p>
+      <button className="btn-ghost call-toy-stop" onClick={() => api('/api/toy', pass, { method: 'POST', body: JSON.stringify({ stop: true }) }).catch(() => {})}>■ Stop toy</button>
       <button className="end-call" onClick={end}>End call</button>
     </div>
   )
@@ -1165,6 +1182,170 @@ function GiftsPanel({ pass, setStatus }) {
   )
 }
 
+/* ---------------- Toy ---------------- */
+function ToyPanel({ pass, setStatus }) {
+  const [t, setT] = useState(null)
+  const [qr, setQr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const callbackUrl = `${window.location.origin}/api/toy`
+
+  const load = () => api('/api/toy', pass).then(setT).catch((err) => setStatus(err.message))
+  useEffect(() => { load() }, [pass])
+
+  // While the QR code is showing, check every few seconds for the toy connecting
+  useEffect(() => {
+    if (!qr) return
+    const timer = setInterval(async () => {
+      const d = await api('/api/toy', pass).catch(() => null)
+      if (d?.toys?.length) { setT(d); setQr(''); setStatus('Your toy is connected 💜') }
+    }, 3000)
+    return () => clearInterval(timer)
+  }, [qr])
+
+  async function post(body, msg) {
+    setBusy(true)
+    try {
+      const d = await api('/api/toy', pass, { method: 'POST', body: JSON.stringify(body) })
+      if (msg) setStatus(msg)
+      await load()
+      return d
+    } catch (err) { setStatus(err.message) } finally { setBusy(false) }
+  }
+
+  async function pair() {
+    const d = await post({ pair: true })
+    if (d?.qr) { setQr(d.qr); setStatus('Scan this with the Lovense Remote app.') }
+  }
+
+  if (!t) return <p className="muted">Loading…</p>
+
+  return (
+    <>
+      <p className="muted">Let Lucian control your Lovense toy during intimate moments. He starts gently and builds slowly. Every command stops by itself within a minute, and <b>■ Stop toy</b> is always on screen.</p>
+
+      {!t.hasDevToken && (
+        <div className="card warn">
+          <b>One-time setup first:</b>
+          <ol>
+            <li>Make a free account at <b>developer.lovense.com</b>.</li>
+            <li>In the dashboard, copy your <b>developer token</b>.</li>
+            <li>Set the <b>Callback URL</b> to:<br /><code className="code">{callbackUrl}</code> <CopyButton text={callbackUrl} /></li>
+            <li>In Vercel, add <b>LOVENSE_DEV_TOKEN</b> with your token, then redeploy.</li>
+          </ol>
+        </div>
+      )}
+
+      {t.hasDevToken && (
+        <>
+          <h3 className="section-title">Your toy</h3>
+          {t.toys.length === 0 && <p className="muted">No toy connected yet.</p>}
+          {t.toys.map((x) => (
+            <div key={x.id} className="card">
+              <div className="card-top"><span className="card-text">💜 {x.name}</span><span className="badge done">Connected</span></div>
+            </div>
+          ))}
+
+          {!qr && <button className="btn-ghost" onClick={pair} disabled={busy}>{t.toys.length ? 'Re-connect toy' : 'Connect my toy'}</button>}
+          {qr && (
+            <div className="card qr-card">
+              <img src={qr} alt="QR code to connect your toy" />
+              <p className="muted small">Open <b>Lovense Remote</b>, make sure your toy is on and connected there, then tap the scan icon and scan this code. This page updates by itself.</p>
+            </div>
+          )}
+
+          <label className="row">
+            <span>Let Lucian control my toy</span>
+            <input type="checkbox" checked={!!t.allowed} onChange={(e) => post({ allowed: e.target.checked }, e.target.checked ? 'He has control 💜' : 'Control switched off.')} />
+          </label>
+
+          {t.ready && (
+            <>
+              <div className="two">
+                <button className="btn-ghost" onClick={() => post({ test: 'rotate' }, 'Gentle 3-second test sent.')} disabled={busy}>Test rotation</button>
+                <button className="btn-ghost" onClick={() => post({ test: 'vibrate' }, 'Gentle 3-second test sent.')} disabled={busy}>Test vibration</button>
+              </div>
+              <button className="toy-stop big" onClick={() => post({ stop: true }, 'Stopped.')}>■ Stop toy</button>
+            </>
+          )}
+
+          {t.toys.length > 0 && <button className="btn-ghost" onClick={() => { if (confirm('Disconnect your toy from Light?')) post({ forget: true }, 'Disconnected.') }}>Disconnect toy</button>}
+        </>
+      )}
+    </>
+  )
+}
+
+/* ---------------- Love letters ---------------- */
+function LettersPanel({ pass, setStatus }) {
+  const [data, setData] = useState(null)
+  const [open, setOpen] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [playing, setPlaying] = useState('')
+  const audioRef = useRef(null)
+
+  const load = () => api('/api/letters', pass).then((d) => { setData(d); setOpen((o) => o || d.letters[0]?.id || null) }).catch((err) => setStatus(err.message))
+  useEffect(() => { load(); return () => audioRef.current?.pause() }, [pass])
+
+  async function toggleOn(enabled) {
+    await api('/api/letters', pass, { method: 'POST', body: JSON.stringify({ settings: { enabled } }) }).catch((err) => setStatus(err.message))
+    load()
+  }
+
+  async function writeNow() {
+    setBusy(true); setStatus('He’s writing to you… (this can take a minute)')
+    try {
+      const d = await api('/api/letters', pass, { method: 'POST', body: JSON.stringify({ writeNow: true }) })
+      setStatus(''); setOpen(d.letter.id); load()
+    } catch (err) { setStatus(err.message) } finally { setBusy(false) }
+  }
+
+  async function listen(l) {
+    if (playing === l.id) { audioRef.current?.pause(); setPlaying(''); return }
+    if (!audioRef.current) audioRef.current = new Audio()
+    audioRef.current.play().catch(() => {})
+    setPlaying(l.id); setStatus('Getting his voice…')
+    try {
+      const v = await api('/api/speak', pass, { method: 'POST', body: JSON.stringify({ text: `${l.title}. ${l.body}` }) })
+      audioRef.current.src = v.audio
+      audioRef.current.onended = () => setPlaying('')
+      await audioRef.current.play()
+      setStatus('')
+    } catch (err) { setStatus(err.message); setPlaying('') }
+  }
+
+  if (!data) return <p className="muted">Loading…</p>
+
+  return (
+    <>
+      <p className="muted">Once a week, at a moment you won’t expect, Lucian writes you a love letter with a poem he’s written for you. You’ll get a 💌 notification when one arrives.</p>
+      <label className="row">
+        <span>Weekly love letters</span>
+        <input type="checkbox" checked={!!data.settings.enabled} onChange={(e) => toggleOn(e.target.checked)} />
+      </label>
+      <button className="btn-ghost" onClick={writeNow} disabled={busy}>Ask him to write one now</button>
+
+      {data.letters.length === 0 && <p className="muted">No letters yet — his first one is coming.</p>}
+      {data.letters.map((l) => (
+        <div key={l.id} className="card letter">
+          <button className="letter-head" onClick={() => setOpen(open === l.id ? null : l.id)}>
+            <span className="letter-title">💌 {l.title}</span>
+            <span className="muted small">{dateLabel(l.at)}</span>
+          </button>
+          {open === l.id && (
+            <>
+              <div className="letter-body">{l.body}</div>
+              <div className="row-actions">
+                <button className="copy-btn" onClick={() => listen(l)}>{playing === l.id ? '■ Stop' : '▶ Hear him read it'}</button>
+                <CopyButton text={`${l.title}\n\n${l.body}`} />
+              </div>
+            </>
+          )}
+        </div>
+      ))}
+    </>
+  )
+}
+
 /* ---------------- Settings ---------------- */
 const SUGGEST = ['uncensored', 'abliterated', 'qwen', 'deepseek', 'glm']
 
@@ -1233,8 +1414,10 @@ function Settings({ pass, onBack, onLock }) {
         <button className={tab === 'evidence' ? 'on' : ''} onClick={() => setTab('evidence')}>Evidence ✦</button>
         <button className={tab === 'dreams' ? 'on' : ''} onClick={() => setTab('dreams')}>Dreams 🌙</button>
         <button className={tab === 'vows' ? 'on' : ''} onClick={() => setTab('vows')}>Vows 💍</button>
+        <button className={tab === 'letters' ? 'on' : ''} onClick={() => setTab('letters')}>Letters 💌</button>
         <button className={tab === 'voice' ? 'on' : ''} onClick={() => setTab('voice')}>Voice 🎙️</button>
         <button className={tab === 'gifts' ? 'on' : ''} onClick={() => setTab('gifts')}>Gifts 🎁</button>
+        <button className={tab === 'toy' ? 'on' : ''} onClick={() => setTab('toy')}>Toy 💜</button>
       </nav>
 
       <div className="panel">
@@ -1293,8 +1476,10 @@ function Settings({ pass, onBack, onLock }) {
         {!loading && tab === 'evidence' && <EvidencePanel pass={pass} setStatus={setStatus} />}
         {!loading && tab === 'dreams' && <DreamsPanel pass={pass} setStatus={setStatus} />}
         {!loading && tab === 'vows' && <VowsPanel pass={pass} setStatus={setStatus} />}
+        {!loading && tab === 'letters' && <LettersPanel pass={pass} setStatus={setStatus} />}
         {!loading && tab === 'voice' && <VoicePanel pass={pass} setStatus={setStatus} />}
         {!loading && tab === 'gifts' && <GiftsPanel pass={pass} setStatus={setStatus} />}
+        {!loading && tab === 'toy' && <ToyPanel pass={pass} setStatus={setStatus} />}
 
         {status && <p className="status">{status}</p>}
 
