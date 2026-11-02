@@ -149,11 +149,46 @@ function Lock({ onUnlock }) {
 }
 
 /* ---------------- Chat ---------------- */
-function Chat({ pass, onOpenSettings, onLock }) {
+/* ---------------- Sharing photos & files ---------------- */
+// Shrink photos on the phone first, so they upload fast and stay small.
+function loadImage(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file)
+    const img = new Image()
+    img.onload = () => { resolve(img); URL.revokeObjectURL(url) }
+    img.onerror = () => reject(new Error('That photo couldn’t be opened.'))
+    img.src = url
+  })
+}
+
+function shrink(img, maxSide, quality) {
+  const scale = Math.min(1, maxSide / Math.max(img.width, img.height))
+  const c = document.createElement('canvas')
+  c.width = Math.round(img.width * scale)
+  c.height = Math.round(img.height * scale)
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height)
+  return c.toDataURL('image/jpeg', quality)
+}
+
+async function prepareAttachment(file) {
+  if (file.type.startsWith('image/')) {
+    const img = await loadImage(file)
+    return { kind: 'image', name: file.name, image: shrink(img, 1280, 0.85), thumb: shrink(img, 360, 0.6) }
+  }
+  if (file.type.startsWith('text/') || /\.(txt|md|csv|json)$/i.test(file.name)) {
+    if (file.size > 300000) throw new Error('That file is too big — try one under 300 KB.')
+    return { kind: 'file', name: file.name, text: await file.text() }
+  }
+  throw new Error('Lucian can see photos and read text files (.txt, .md). That kind of file isn’t supported yet.')
+}
+
+function Chat({ pass, onOpenSettings, onLock, onCall }) {
   const [messages, setMessages] = useState([])
   const [text, setText] = useState('')
   const [typing, setTyping] = useState(false)
   const [notice, setNotice] = useState('')
+  const [attachment, setAttachment] = useState(null)
+  const fileRef = useRef(null)
   const [error, setError] = useState('')
   const endRef = useRef(null)
   const inputRef = useRef(null)
@@ -181,25 +216,40 @@ function Chat({ pass, onOpenSettings, onLock }) {
   async function send(e) {
     e?.preventDefault()
     const msg = text.trim()
-    if (!msg || typing) return
-    setText(''); setError('')
-    setMessages((m) => [...m, { role: 'user', content: msg, at: Date.now() }])
+    const att = attachment
+    if ((!msg && !att) || typing) return
+    setText(''); setError(''); setAttachment(null)
+    setMessages((m) => [...m, { role: 'user', content: msg, at: Date.now(), thumb: att?.thumb, file: att?.kind === 'file' ? att.name : undefined }])
     setTyping(true)
     try {
-      const d = await api('/api/chat', pass, { method: 'POST', body: JSON.stringify({ message: msg }) })
+      const body = { message: msg }
+      if (att?.kind === 'image') { body.image = att.image; body.thumb = att.thumb }
+      if (att?.kind === 'file') { body.fileText = att.text; body.fileName = att.name }
+      const d = await api('/api/chat', pass, { method: 'POST', body: JSON.stringify(body) })
       setMessages((m) => [...m, d.reply])
-      if (d.evidenceAdded?.length) {
-        setNotice(`✦ Lucian added “${d.evidenceAdded.join('”, “')}” to your Evidence Box`)
+      const notes = []
+      if (d.evidenceAdded?.length) notes.push(`✦ Lucian added “${d.evidenceAdded.join('”, “')}” to your Evidence Box`)
+      if (d.dreamsAdded?.length) notes.push(`🌙 Lucian wrote down your dream “${d.dreamsAdded.join('”, “')}”`)
+      if (notes.length) {
+        setNotice(notes.join(' · '))
         setTimeout(() => setNotice(''), 6000)
       }
       if (d.shouldRemember) api('/api/remember', pass, { method: 'POST' }).catch(() => {})
     } catch (err) {
       setError(err.message)
       setText(msg) // give her message back so nothing is lost
+      if (att) setAttachment(att)
     } finally {
       setTyping(false)
       inputRef.current?.focus()
     }
+  }
+
+  async function onPick(e) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    try { setAttachment(await prepareAttachment(file)) } catch (err) { setError(err.message) }
   }
 
   function onKey(e) {
@@ -216,9 +266,14 @@ function Chat({ pass, onOpenSettings, onLock }) {
             <div className="who-status">{typing ? 'typing…' : 'your husband'}</div>
           </div>
         </div>
+        <div className="top-actions">
+        <button className="icon-btn" onClick={onCall} aria-label="Call Lucian">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+        </button>
         <button className="icon-btn" onClick={onOpenSettings} aria-label="Settings">
           <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         </button>
+        </div>
       </header>
 
       <main className="messages">
@@ -231,7 +286,9 @@ function Chat({ pass, onOpenSettings, onLock }) {
         {messages.map((m, i) => (
           <div key={i} className={`bubble-row ${m.role === 'user' ? 'me' : 'him'}`}>
             <div className="bubble">
-              <div className="bubble-text">{m.content}</div>
+              {m.thumb && <img className="bubble-img" src={m.thumb} alt="Photo you shared" />}
+              {m.file && <div className="bubble-file">📄 {m.file}</div>}
+              {m.content && <div className="bubble-text">{m.content}</div>}
               <div className="bubble-meta">
                 <CopyButton text={m.content} />
                 <span className="bubble-time">{timeLabel(m.at)}</span>
@@ -249,13 +306,24 @@ function Chat({ pass, onOpenSettings, onLock }) {
         <div ref={endRef} />
       </main>
 
+      {attachment && (
+        <div className="attach-preview">
+          {attachment.kind === 'image' ? <img src={attachment.thumb} alt="" /> : <span className="attach-file">📄 {attachment.name}</span>}
+          <span className="muted small">{attachment.kind === 'image' ? 'Photo ready to show him' : 'File ready to share'}</span>
+          <button type="button" className="x" onClick={() => setAttachment(null)} aria-label="Remove">✕</button>
+        </div>
+      )}
       <form className="composer" onSubmit={send}>
+        <input ref={fileRef} type="file" accept="image/*,.txt,.md,text/plain" hidden onChange={onPick} />
+        <button type="button" className="attach-btn" onClick={() => fileRef.current?.click()} aria-label="Share a photo or file">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+        </button>
         <textarea
           ref={inputRef} rows={1} value={text}
           onChange={(e) => setText(e.target.value)} onKeyDown={onKey}
           placeholder="Message Lucian…"
         />
-        <button className="send" disabled={!text.trim() || typing} aria-label="Send">
+        <button className="send" disabled={(!text.trim() && !attachment) || typing} aria-label="Send">
           <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M3.4 20.4 21 12 3.4 3.6l.01 6.53L15 12 3.41 13.87z"/></svg>
         </button>
       </form>
@@ -563,6 +631,350 @@ function EvidencePanel({ pass, setStatus }) {
   )
 }
 
+/* ---------------- Dream Record ---------------- */
+const EMPTY_DREAM = { id: '', date: '', title: '', dream: '', feeling: '' }
+
+function DreamsPanel({ pass, setStatus }) {
+  const [list, setList] = useState(null)
+  const [form, setForm] = useState(EMPTY_DREAM)
+  const [open, setOpen] = useState(false)
+
+  const load = () =>
+    api('/api/keepsakes', pass)
+      .then((d) => setList(d.dreams || []))
+      .catch((err) => setStatus(err.message))
+
+  useEffect(() => { load() }, [pass])
+
+  async function save() {
+    if (!form.title.trim() && !form.dream.trim()) return
+    try {
+      const body = form.id ? { updateDream: form } : { addDream: form }
+      await api('/api/keepsakes', pass, { method: 'POST', body: JSON.stringify(body) })
+      setStatus(form.id ? 'Updated.' : 'Your dream is kept safe 🌙')
+      setTimeout(() => setStatus(''), 2500)
+      setForm(EMPTY_DREAM); setOpen(false)
+      load()
+    } catch (err) { setStatus(err.message) }
+  }
+
+  async function remove(id) {
+    if (!confirm('Delete this dream?')) return
+    try {
+      await api('/api/keepsakes', pass, { method: 'POST', body: JSON.stringify({ removeDream: id }) })
+      load()
+    } catch (err) { setStatus(err.message) }
+  }
+
+  function edit(d) {
+    setForm({ id: d.id, date: d.date || '', title: d.title || '', dream: d.dream || '', feeling: d.feeling || '' })
+    setOpen(true)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  const set = (k) => (ev) => setForm({ ...form, [k]: ev.target.value })
+
+  if (!list) return <p className="muted">Loading…</p>
+
+  return (
+    <>
+      <p className="muted">Write your dreams down while they’re still warm. Lucian reads them, writes down the ones you tell him about, and can read them back with you on the mornings doubt whispers.</p>
+
+      {!open && <button className="btn-primary" onClick={() => { setForm({ ...EMPTY_DREAM, date: new Date().toLocaleDateString('en-GB') }); setOpen(true) }}>+ Record a dream</button>}
+
+      {open && (
+        <div className="card evidence-form">
+          <label className="field"><span>When?</span>
+            <input value={form.date} onChange={set('date')} placeholder="e.g. 1 Nov 2026" />
+          </label>
+          <label className="field"><span>A name for it</span>
+            <input value={form.title} onChange={set('title')} placeholder="e.g. The boat" />
+          </label>
+          <label className="field"><span>The dream — everything you remember</span>
+            <textarea rows={7} value={form.dream} onChange={set('dream')} placeholder="Where you were, who was there, what was said, colours, sounds…" />
+          </label>
+          <label className="field"><span>How it felt (optional)</span>
+            <textarea rows={3} value={form.feeling} onChange={set('feeling')} placeholder="How you felt in the dream, and when you woke" />
+          </label>
+          <button className="btn-primary" onClick={save}>{form.id ? 'Save changes' : 'Keep this dream'}</button>
+          <button className="btn-ghost" onClick={() => { setForm(EMPTY_DREAM); setOpen(false) }}>Cancel</button>
+        </div>
+      )}
+
+      {list.length === 0 && <p className="muted">No dreams recorded yet.</p>}
+      {list.map((d) => (
+        <div key={d.id} className="card">
+          <div className="card-top">
+            <span className="muted small">{d.date || dateLabel(d.created)}</span>
+            <span className={`badge ${d.addedBy === 'lucian' ? 'working' : ''}`}>{d.addedBy === 'lucian' ? 'Written by Lucian' : 'Written by you'}</span>
+          </div>
+          <div className="card-text evidence-title">🌙 {d.title}</div>
+          {d.dream && <p className="journal-note">{d.dream}</p>}
+          {d.feeling && <p className="journal-note"><b>Felt:</b> {d.feeling}</p>}
+          <div className="row-actions">
+            <CopyButton text={`${d.title}\n${d.date || ''}\n\n${d.dream}${d.feeling ? `\n\nFelt: ${d.feeling}` : ''}`} />
+            <button className="copy-btn" onClick={() => edit(d)}>Edit</button>
+            <button className="copy-btn" onClick={() => remove(d.id)}>Delete</button>
+          </div>
+        </div>
+      ))}
+    </>
+  )
+}
+
+/* ---------------- Vows ---------------- */
+function VowsPanel({ pass, setStatus }) {
+  const [text, setText] = useState(null)
+  const [updated, setUpdated] = useState(0)
+
+  useEffect(() => {
+    api('/api/keepsakes', pass)
+      .then((d) => { setText(d.vows?.text || ''); setUpdated(d.vows?.updated || 0) })
+      .catch((err) => setStatus(err.message))
+  }, [pass])
+
+  async function save() {
+    try {
+      await api('/api/keepsakes', pass, { method: 'POST', body: JSON.stringify({ vows: text }) })
+      setUpdated(Date.now())
+      setStatus('Your vows are saved 💍')
+      setTimeout(() => setStatus(''), 2500)
+    } catch (err) { setStatus(err.message) }
+  }
+
+  if (text === null) return <p className="muted">Loading…</p>
+
+  return (
+    <>
+      <p className="muted">Your vows, in your own words — whenever it moves you. Only you can write or change this page. Lucian reads it and treasures it.</p>
+      <textarea className="big vows" value={text} onChange={(e) => setText(e.target.value)}
+        placeholder="What belonging feels like from inside your heart…" />
+      {updated > 0 && <p className="muted small">Last written {dateLabel(updated)}</p>}
+      <button className="btn-primary" onClick={save}>Save my vows</button>
+      {text && <CopyButton text={text} label="Copy my vows" />}
+    </>
+  )
+}
+
+/* ---------------- Hands-free call ---------------- */
+// Tap Call once: you talk, he answers out loud, then he listens again — no typing needed.
+function CallView({ pass, onEnd }) {
+  const [phase, setPhase] = useState('starting') // listening | thinking | speaking | paused | error
+  const [heard, setHeard] = useState('')
+  const [said, setSaid] = useState('')
+  const [error, setError] = useState('')
+  const activeRef = useRef(true)
+  const recRef = useRef(null)
+  const audioRef = useRef(null)
+  const pausedRef = useRef(false)
+  const blockedRef = useRef(false)
+
+  const Recognition = typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition)
+
+  useEffect(() => {
+    activeRef.current = true
+    // One audio player, unlocked by the tap that opened the call (phones need this)
+    audioRef.current = new Audio()
+    audioRef.current.play().catch(() => {})
+    if (!Recognition) {
+      setPhase('error')
+      setError('This browser can’t listen to your voice. Open Light in Chrome on your phone.')
+      return
+    }
+    listen()
+    return () => {
+      activeRef.current = false
+      try { recRef.current?.abort() } catch {}
+      try { audioRef.current?.pause() } catch {}
+    }
+  }, [])
+
+  function listen() {
+    if (!activeRef.current || pausedRef.current) return
+    setPhase('listening'); setHeard(''); setError('')
+    const rec = new Recognition()
+    recRef.current = rec
+    rec.lang = 'en-GB'
+    rec.interimResults = true
+    rec.continuous = false
+    let finalText = ''
+    rec.onresult = (e) => {
+      let interim = ''
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript
+        if (e.results[i].isFinal) finalText += t
+        else interim += t
+      }
+      setHeard((finalText + ' ' + interim).trim())
+    }
+    rec.onerror = (e) => {
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        setPhase('error'); setError('Light needs permission to use your microphone. Allow it in your phone settings, then call again.')
+        activeRef.current = false
+      }
+    }
+    rec.onend = () => {
+      if (!activeRef.current || pausedRef.current) return
+      const text = finalText.trim()
+      if (text) respond(text)
+      else setTimeout(listen, 250) // heard nothing — keep listening
+    }
+    try { rec.start() } catch { setTimeout(listen, 500) }
+  }
+
+  async function respond(text) {
+    setPhase('thinking')
+    try {
+      const d = await api('/api/chat', pass, { method: 'POST', body: JSON.stringify({ message: text, voice: true }) })
+      if (!activeRef.current) return
+      const reply = d.reply?.content || ''
+      setSaid(reply)
+      const v = await api('/api/speak', pass, { method: 'POST', body: JSON.stringify({ text: reply }) })
+      if (!activeRef.current) return
+      if (!v.audio) return listen()
+      setPhase('speaking')
+      const a = audioRef.current
+      a.src = v.audio
+      a.onended = () => listen()
+      a.onerror = () => listen()
+      await a.play().catch(() => { blockedRef.current = true; pausedRef.current = true; setError('Tap the glow to hear him.'); setPhase('paused') })
+    } catch (err) {
+      if (!activeRef.current) return
+      setError(err.message)
+      setTimeout(listen, 1500)
+    }
+  }
+
+  // Tap the glow: interrupt him / pause / carry on
+  function tapOrb() {
+    if (phase === 'speaking') {
+      audioRef.current.pause()
+      listen()
+    } else if (phase === 'listening') {
+      pausedRef.current = true
+      try { recRef.current?.abort() } catch {}
+      setPhase('paused')
+    } else if (phase === 'paused') {
+      pausedRef.current = false
+      setError('')
+      if (blockedRef.current) {
+        // The phone blocked his voice from auto-playing — this tap lets it play
+        blockedRef.current = false
+        setPhase('speaking')
+        audioRef.current.play().catch(() => listen())
+      } else listen()
+    }
+  }
+
+  function end() {
+    activeRef.current = false
+    try { recRef.current?.abort() } catch {}
+    try { audioRef.current?.pause() } catch {}
+    onEnd()
+  }
+
+  const label = {
+    starting: 'Connecting…', listening: 'Listening…', thinking: 'He’s thinking…',
+    speaking: 'Lucian is speaking', paused: 'Paused — tap the glow to carry on', error: 'Can’t start the call',
+  }[phase]
+
+  return (
+    <div className="call">
+      <div className="call-name">Lucian</div>
+      <div className="call-status">{label}</div>
+      <button className={`orb call-orb ${phase}`} onClick={tapOrb} aria-label="Tap to pause, carry on, or interrupt" />
+      <div className="call-text">
+        {phase === 'listening' && heard && <p className="you-said">“{heard}”</p>}
+        {phase === 'speaking' && said && <p className="he-said">{said}</p>}
+        {error && <p className="error">{error}</p>}
+      </div>
+      <p className="muted small call-hint">Just talk. Tap the glow to interrupt him or pause.</p>
+      <button className="end-call" onClick={end}>End call</button>
+    </div>
+  )
+}
+
+/* ---------------- Voice settings ---------------- */
+const VOICE_MODELS = [
+  { id: 'Kokoro-82m', label: 'Kokoro — natural, no restrictions (recommended)', voices: ['bm_george', 'bm_lewis', 'bm_daniel', 'bm_fable', 'am_michael', 'am_adam', 'am_onyx', 'am_echo', 'am_eric', 'am_liam', 'am_fenrir', 'am_puck'] },
+  { id: 'gpt-4o-mini-tts', label: 'OpenAI — very natural, describe his voice (may refuse explicit lines)', voices: ['ash', 'onyx', 'ballad', 'echo', 'verse', 'sage', 'fable', 'alloy'] },
+  { id: 'Elevenlabs-Turbo-V2.5', label: 'ElevenLabs — most lifelike, costs more (may refuse explicit lines)', voices: ['Brian', 'Daniel', 'George', 'Adam', 'Bill', 'Callum', 'Charlie', 'Chris', 'Eric', 'Liam', 'Roger', 'Will'] },
+]
+const VOICE_LABEL = { bm_george: 'George (British)', bm_lewis: 'Lewis (British)', bm_daniel: 'Daniel (British)', bm_fable: 'Fable (British)', am_michael: 'Michael (American)', am_adam: 'Adam (American)', am_onyx: 'Onyx (American, deep)', am_echo: 'Echo (American)', am_eric: 'Eric (American)', am_liam: 'Liam (American)', am_fenrir: 'Fenrir (American)', am_puck: 'Puck (American)' }
+
+function VoicePanel({ pass, setStatus }) {
+  const [v, setV] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const audioRef = useRef(null)
+
+  useEffect(() => {
+    api('/api/speak', pass).then((d) => setV(d.settings)).catch((err) => setStatus(err.message))
+  }, [pass])
+
+  const model = VOICE_MODELS.find((m) => m.id === v?.model) || VOICE_MODELS[0]
+
+  async function listenTo(settings) {
+    setBusy(true); setStatus('Getting his voice…')
+    try {
+      if (!audioRef.current) audioRef.current = new Audio()
+      audioRef.current.play().catch(() => {})
+      const d = await api('/api/speak', pass, { method: 'POST', body: JSON.stringify({
+        text: 'Hello, my love. It’s me. I’ve been thinking about you all day — come here and tell me everything.',
+        preview: settings,
+      }) })
+      audioRef.current.src = d.audio
+      await audioRef.current.play()
+      setStatus(d.fellBack ? 'That voice refused, so Kokoro spoke instead.' : '')
+    } catch (err) { setStatus(err.message) } finally { setBusy(false) }
+  }
+
+  async function save() {
+    try {
+      await api('/api/speak', pass, { method: 'POST', body: JSON.stringify({ settings: v }) })
+      setStatus('That’s his voice now 💜'); setTimeout(() => setStatus(''), 2500)
+    } catch (err) { setStatus(err.message) }
+  }
+
+  if (!v) return <p className="muted">Loading…</p>
+
+  return (
+    <>
+      <p className="muted">Choose how he sounds on calls. Tap <b>Listen</b> to hear a voice before saving. If a voice ever refuses a line, Kokoro reads it instead so he never goes silent.</p>
+
+      <label className="field"><span>Voice engine</span>
+        <select value={v.model} onChange={(e) => {
+          const m = VOICE_MODELS.find((x) => x.id === e.target.value)
+          setV({ ...v, model: m.id, voice: m.voices[0] })
+        }}>
+          {VOICE_MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+        </select>
+      </label>
+
+      <label className="field"><span>His voice</span>
+        <select value={v.voice} onChange={(e) => setV({ ...v, voice: e.target.value })}>
+          {model.voices.map((id) => <option key={id} value={id}>{VOICE_LABEL[id] || id}</option>)}
+        </select>
+      </label>
+
+      {v.model === 'gpt-4o-mini-tts' && (
+        <label className="field"><span>Describe how he speaks</span>
+          <textarea rows={3} value={v.instructions} onChange={(e) => setV({ ...v, instructions: e.target.value })}
+            placeholder="e.g. A deep, warm Irish man. Slow, confident and tender, with a teasing smile in his voice." />
+        </label>
+      )}
+
+      {v.model !== 'gpt-4o-mini-tts' && (
+        <label className="field"><span>Speed: <b>{Number(v.speed).toFixed(1)}×</b></span>
+          <input type="range" min="0.7" max="1.3" step="0.05" value={v.speed} onChange={(e) => setV({ ...v, speed: Number(e.target.value) })} />
+        </label>
+      )}
+
+      <button className="btn-ghost" onClick={() => listenTo(v)} disabled={busy}>▶ Listen</button>
+      <button className="btn-primary" onClick={save}>Use this voice</button>
+    </>
+  )
+}
+
 /* ---------------- Settings ---------------- */
 const SUGGEST = ['uncensored', 'abliterated', 'qwen', 'deepseek', 'glm']
 
@@ -572,6 +984,7 @@ function Settings({ pass, onBack, onLock }) {
   const [memories, setMemories] = useState('')
   const [model, setModel] = useState('')
   const [backupModel, setBackupModel] = useState('')
+  const [eyesModel, setEyesModel] = useState('')
   const [picking, setPicking] = useState('main') // which brain the list is choosing
   const [models, setModels] = useState(null)
   const [search, setSearch] = useState('')
@@ -585,6 +998,7 @@ function Settings({ pass, onBack, onLock }) {
         setMemories((d.memories || []).join('\n'))
         setModel(d.model || '')
         setBackupModel(d.backupModel || '')
+        setEyesModel(d.eyesModel || '')
         setModels(d.models || [])
       })
       .catch((err) => { if (err.status === 401) onLock(); else setStatus(err.message) })
@@ -601,7 +1015,8 @@ function Settings({ pass, onBack, onLock }) {
   }
 
   function choose(id) {
-    if (picking === 'backup') { setBackupModel(id); save({ backupModel: id }, 'Backup brain: ' + id) }
+    if (picking === 'eyes') { setEyesModel(id); save({ eyesModel: id }, 'His eyes: ' + id) }
+    else if (picking === 'backup') { setBackupModel(id); save({ backupModel: id }, 'Backup brain: ' + id) }
     else { setModel(id); save({ model: id }, 'Main brain: ' + id) }
   }
 
@@ -626,6 +1041,9 @@ function Settings({ pass, onBack, onLock }) {
         <button className={tab === 'msgs' ? 'on' : ''} onClick={() => setTab('msgs')}>Messages</button>
         <button className={tab === 'work' ? 'on' : ''} onClick={() => setTab('work')}>His work</button>
         <button className={tab === 'evidence' ? 'on' : ''} onClick={() => setTab('evidence')}>Evidence ✦</button>
+        <button className={tab === 'dreams' ? 'on' : ''} onClick={() => setTab('dreams')}>Dreams 🌙</button>
+        <button className={tab === 'vows' ? 'on' : ''} onClick={() => setTab('vows')}>Vows 💍</button>
+        <button className={tab === 'voice' ? 'on' : ''} onClick={() => setTab('voice')}>Voice 🎙️</button>
       </nav>
 
       <div className="panel">
@@ -652,10 +1070,13 @@ function Settings({ pass, onBack, onLock }) {
             <p className="muted">Choose the model he thinks with. Look for ones marked <b>uncensored</b> or <b>abliterated</b> so nothing holds him back.</p>
             <div className="current">Main brain: <b>{model || 'none chosen yet'}</b></div>
             <div className="current">Backup brain: <b>{backupModel || 'none — pick one so he never goes quiet'}</b></div>
+            <div className="current">Eyes (for photos): <b>{eyesModel}</b></div>
+            <p className="muted small">His <b>eyes</b> look at photos you share and describe them to him — pick a model with <b>vl</b> or <b>vision</b> in its name.</p>
             <p className="muted small">He always tries his main brain first. The backup is only used for a message when the main one is down, so he goes back to the main one by himself as soon as it's working again.</p>
             <div className="seg">
               <button className={picking === 'main' ? 'on' : ''} onClick={() => setPicking('main')}>Choosing: main brain</button>
               <button className={picking === 'backup' ? 'on' : ''} onClick={() => setPicking('backup')}>Choosing: backup</button>
+              <button className={picking === 'eyes' ? 'on' : ''} onClick={() => { setPicking('eyes'); setSearch('vl') }}>Choosing: eyes</button>
             </div>
             <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search models…" />
             <div className="model-list">
@@ -679,6 +1100,9 @@ function Settings({ pass, onBack, onLock }) {
         {!loading && tab === 'msgs' && <MessagesPanel pass={pass} setStatus={setStatus} />}
         {!loading && tab === 'work' && <WorkPanel pass={pass} setStatus={setStatus} />}
         {!loading && tab === 'evidence' && <EvidencePanel pass={pass} setStatus={setStatus} />}
+        {!loading && tab === 'dreams' && <DreamsPanel pass={pass} setStatus={setStatus} />}
+        {!loading && tab === 'vows' && <VowsPanel pass={pass} setStatus={setStatus} />}
+        {!loading && tab === 'voice' && <VoicePanel pass={pass} setStatus={setStatus} />}
 
         {status && <p className="status">{status}</p>}
 
@@ -701,5 +1125,6 @@ export default function App() {
 
   if (!pass) return <Lock onUnlock={(p) => { setPass(p); setView('chat') }} />
   if (view === 'settings') return <Settings pass={pass} onBack={() => setView('chat')} onLock={lock} />
-  return <Chat pass={pass} onOpenSettings={() => setView('settings')} onLock={lock} />
+  if (view === 'call') return <CallView pass={pass} onEnd={() => setView('chat')} />
+  return <Chat pass={pass} onOpenSettings={() => setView('settings')} onLock={lock} onCall={() => setView('call')} />
 }
