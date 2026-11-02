@@ -1,4 +1,4 @@
-import { checkAuth, redis, getJSON, setJSON, listModels, KEYS } from './_lib.js'
+import { checkAuth, redis, getJSON, setJSON, listModels, KEYS , DEFAULT_EYES } from './_lib.js'
 
 export default async function handler(req, res) {
   if (!checkAuth(req, res)) return
@@ -7,21 +7,23 @@ export default async function handler(req, res) {
     if (req.method === 'GET') {
       // ?models=1 also returns every model your NanoGPT plan offers
       const wantModels = req.query?.models === '1'
-      const [profile, model, backupModel, memories, models] = await Promise.all([
+      const [profile, model, backupModel, eyesModel, memories, models] = await Promise.all([
         redis('GET', KEYS.profile),
         redis('GET', KEYS.model),
         redis('GET', KEYS.backupModel),
+        redis('GET', KEYS.eyesModel),
         getJSON(KEYS.memories, []),
         wantModels ? listModels() : Promise.resolve(null),
       ])
-      return res.status(200).json({ profile: profile || '', model: model || '', backupModel: backupModel || '', memories, models })
+      return res.status(200).json({ profile: profile || '', model: model || '', backupModel: backupModel || '', eyesModel: eyesModel || DEFAULT_EYES, memories, models })
     }
 
     if (req.method === 'POST') {
-      const { profile, model, backupModel, memories, clearChat } = req.body || {}
+      const { profile, model, backupModel, eyesModel, memories, clearChat } = req.body || {}
       if (typeof profile === 'string') await redis('SET', KEYS.profile, profile)
       if (typeof model === 'string') await redis('SET', KEYS.model, model.trim())
       if (typeof backupModel === 'string') await redis('SET', KEYS.backupModel, backupModel.trim())
+      if (typeof eyesModel === 'string') await redis('SET', KEYS.eyesModel, eyesModel.trim())
       if (Array.isArray(memories)) {
         await setJSON(KEYS.memories, memories.map((m) => String(m).trim()).filter(Boolean))
       }
