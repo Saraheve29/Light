@@ -259,3 +259,14 @@ textarea.vows { font-family: var(--serif); font-size: 19px; line-height: 1.6; mi
 .call-actions { display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 340px; }
 .call-send { padding: 15px; font-size: 17px; }
 .call-text { max-height: 32vh; overflow-y: auto; }
+
+/* Qwen voice maker */
+.qwen-box { margin-top: 26px; padding-top: 18px; border-top: 1px solid rgba(180, 140, 255, 0.18); display: flex; flex-direction: column; gap: 10px; }
+.qwen-box h3 { margin: 0; font-family: var(--serif); font-size: 22px; }
+.qwen-box h4 { margin: 12px 0 0; font-size: 15px; color: var(--muted); font-weight: 600; }
+.qwen-list { display: flex; flex-direction: column; gap: 8px; }
+.qwen-item { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(180, 140, 255, 0.15); }
+.qwen-item.on { border-color: rgba(200, 160, 255, 0.7); box-shadow: 0 0 14px rgba(160, 110, 255, 0.25); }
+.qwen-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.qwen-box .row { display: flex; gap: 8px; flex-wrap: wrap; }
+.file-pick { display: inline-block; text-align: center; cursor: pointer; }
