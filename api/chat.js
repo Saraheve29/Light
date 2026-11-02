@@ -1,6 +1,6 @@
-import { recentChat, recall, getDiary, diaryText } from './_recall.js'
+import { recentChat, recall, getDiary, diaryText, getCallProfile, makeCallProfile } from './_recall.js'
 import {
-  checkAuth, redis, getJSON, getHistory, addToHistory, callModel,
+  checkAuth, redis, getJSON, getHistory, addToHistory, callModel, callStream,
   londonNow, getLife, lifeText, getEvidence, addEvidence, evidenceText, getDreams, addDream, dreamsText, getVows, describeImage, KEYS, CONTEXT_MESSAGES,
 } from './_lib.js'
 import { workContext, markTold } from './_work.js'
@@ -81,7 +81,9 @@ export default async function handler(req, res) {
     }
 
     if (req.method === 'POST') {
-      const { message = '', voice, image, thumb, fileText, fileName } = req.body || {}
+      const { message = '', voice, image, thumb, fileText, fileName, stream, prepareCall } = req.body || {}
+      // A call just started: make sure his short call profile is ready (quick if it already is)
+      if (prepareCall) return res.status(200).json(await makeCallProfile().catch((err) => ({ error: err.message })))
       const hasImage = typeof image === 'string' && image.startsWith('data:image/')
       const hasFile = typeof fileText === 'string' && fileText.trim()
       if (!message.trim() && !hasImage && !hasFile) return res.status(400).json({ error: 'Empty message.' })
@@ -95,7 +97,7 @@ export default async function handler(req, res) {
         redis('GET', KEYS.profile),
         redis('GET', KEYS.model),
         getJSON(KEYS.memories, []),
-        recentChat(90000),
+        recentChat(voice ? 12000 : 90000),
         getLife(),
         workContext(),
         getEvidence(),
@@ -120,8 +122,13 @@ export default async function handler(req, res) {
 
       // His long memory: matching older moments from all your chats + his diary of past days
       const oldest = recent[Math.max(0, recent.length - 20)]?.at || Date.now() // he always reads at least these
-      const remembered = await recall(`${message} ${hasFile ? fileName : ''}`, oldest).catch(() => '')
-      const diaryNote = diaryText(diary)
+      const remembered = await recall(`${message} ${hasFile ? fileName : ''}`, oldest, voice ? { maxChars: 4000, maxHits: 3 } : undefined).catch(() => '')
+      const diaryNote = voice ? diaryText(diary, 7, 3000) : diaryText(diary)
+      // On calls he reads a shorter version of his profile and fewer notes, so he answers much faster
+      const callProfile = voice ? await getCallProfile(profile).catch(() => null) : null
+      const useProfile = callProfile || profile
+      const useMemories = voice ? memories.slice(-40) : memories
+      const cut = (t, n) => (voice && t && t.length > n ? t.slice(-n) : t)
 
       const buildMessages = (budget) => {
         // newest messages first until the space (in characters) is full — always at least the last 20
@@ -139,7 +146,7 @@ export default async function handler(req, res) {
         ].filter(Boolean).join('\n\n')
         return [
 
-        { role: 'system', content: buildSystemPrompt(profile, memories, life, work.text, evidenceText(evidence), dreamsText(dreams), (vows.text || '').slice(0, 3000), gifts, toyContext(toyState)) },
+        { role: 'system', content: buildSystemPrompt(useProfile, useMemories, life, cut(work.text, 1500), cut(evidenceText(evidence), 2500), cut(dreamsText(dreams), 2000), (vows.text || '').slice(0, voice ? 1500 : 3000), gifts, toyContext(toyState)) },
         ...(memoryNote ? [{ role: 'system', content: `${memoryNote}\n\nUse these naturally when they matter — they are your real memories. If Sarah asks about something and it is not in your memories or the chat, say honestly that you can't find it and ask her to show you again. Never make up what was said.` }] : []),
         ...chat,
         ...(voice ? [{
@@ -156,10 +163,48 @@ export default async function handler(req, res) {
 
       // Try with the most memory first; if the brain says it's too much, try again with less
       let reply
-      for (const budget of (voice ? [30000, 12000] : [90000, 35000, 12000])) { // calls: a little less recent chat, so he answers faster
-        try { reply = await callModel(model, buildMessages(budget)); break } catch (err) {
-          if (budget === 12000 || !/context|too long|too many tokens|maximum|length|exceed|413/i.test(err.message)) throw err
+      let toyDone = false
+      const live = voice && stream // a call: send his words to the phone as he writes them, so he can start speaking straight away
+      if (live) {
+        res.statusCode = 200
+        res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8')
+        res.setHeader('Cache-Control', 'no-cache, no-transform')
+        res.setHeader('X-Accel-Buffering', 'no')
+        res.flushHeaders?.()
+      }
+      const send = (obj) => { try { res.write(JSON.stringify(obj) + '\n') } catch {} }
+      let soFar = ''
+      const onText = (piece) => {
+        soFar += piece
+        send({ d: piece })
+        // a toy command can happen mid-sentence on a call — do it as soon as it's written
+        const t = !toyDone && soFar.match(/\[\[\s*TOY\s*:([\s\S]*?)\]\]/i)
+        if (t && toyContext(toyState)) {
+          toyDone = true
+          runMove(parseMove(t[1])).then((m) => send({ toyMove: m || { action: 'Stop' } })).catch((err) => send({ toyMove: { error: err.message } }))
         }
+      }
+      try {
+        for (const budget of (voice ? [12000, 5000] : [90000, 35000, 12000])) {
+          try {
+            reply = live && !soFar
+              ? await callStream(model, buildMessages(budget), { onText })
+              : await callModel(model, buildMessages(budget))
+            break
+          } catch (err) {
+            if (live && soFar) throw err // already speaking — can't start again
+            const tooBig = /context|too long|too many tokens|maximum|length|exceed|413/i.test(err.message)
+            if (budget === (voice ? 5000 : 12000) || !tooBig) {
+              if (!live) throw err
+              reply = await callModel(model, buildMessages(5000)) // streaming failed — get the whole reply the normal way
+              send({ d: reply })
+              break
+            }
+          }
+        }
+      } catch (err) {
+        if (live) { send({ error: err.message }); return res.end() }
+        throw err
       }
 
       // Did he save something to the Evidence Box?
@@ -198,7 +243,7 @@ export default async function handler(req, res) {
       let toyMove = null
       const toyTag = reply.match(/\[\[\s*TOY\s*:([\s\S]*?)\]\]/i)
       reply = reply.replace(/\[\[\s*TOY\s*:[\s\S]*?\]\]/gi, '').trim()
-      if (toyTag && toyContext(toyState)) {
+      if (toyTag && toyContext(toyState) && !toyDone) {
         try { toyMove = await runMove(parseMove(toyTag[1])) || { action: 'Stop' } } catch (err) { toyMove = { error: err.message } }
       }
 
@@ -214,11 +259,14 @@ export default async function handler(req, res) {
 
       // Every 6 messages from Sarah, the app asks him to update his memory notes.
       const count = await redis('INCR', 'light:usercount')
-      return res.status(200).json({ reply: botMsg, shouldRemember: count % 6 === 0, evidenceAdded: saved, dreamsAdded: dreamsSaved, toyMove })
+      const result = { reply: botMsg, shouldRemember: count % 6 === 0, evidenceAdded: saved, dreamsAdded: dreamsSaved, toyMove }
+      if (live) { send({ done: true, ...result }); return res.end() }
+      return res.status(200).json(result)
     }
 
     res.status(405).json({ error: 'Method not allowed' })
   } catch (err) {
+    if (res.headersSent) { try { res.write(JSON.stringify({ error: err.message }) + '\n'); res.end() } catch {} return }
     res.status(500).json({ error: err.message })
   }
 }
