@@ -1,5 +1,5 @@
-// Lucian's surprise gifts — he chooses something from Amazon UK and Zinc orders it with his own Amazon account,
-// paid from that account's gift card balance. Prices from Amazon UK are in pence.
+// Lucian's surprise gifts — he chooses something from Amazon UK or one of Sarah's tested favourite UK shops,
+// and Zinc orders it. Paid from the Zinc wallet (or Lucian's own Amazon account, if linked). Prices are in pence.
 import { redis, getJSON, setJSON, callModel, londonNow, KEYS } from './_lib.js'
 
 const ZINC = 'https://api.zinc.com' // Zinc's newer system (keys start with zn_)
@@ -14,11 +14,30 @@ export const DEFAULT_GIFT_SETTINGS = {
   perGift: 10, // £ max per gift (including delivery)
   perMonth: 10, // £ max per calendar month
   address: { firstName: '', lastName: '', line1: '', line2: '', city: '', county: '', postcode: '', phone: '' },
+  loves: '', // things Sarah would love
+  never: '', // things he must never buy (comma separated)
+  shops: [], // favourite UK shops: { domain, name, status: 'untested' | 'ok' | 'failed', note }
+}
+
+export const STARTER_SHOPS = [
+  { domain: 'sussexstones.co.uk', name: 'Sussex Stones' },
+  { domain: 'witchplease.co.uk', name: 'Witch Please' },
+  { domain: 'the-half-moon.com', name: 'The Half Moon' },
+  { domain: 'shopmoonlightguidance.com', name: 'Moonlight Guidance' },
+  { domain: 'chakraandaura.com', name: 'Chakra and Aura' },
+  { domain: 'thebodyshop.com', name: 'The Body Shop' },
+  { domain: 'iconiclondoninc.com', name: 'ICONIC London' },
+]
+
+export function cleanDomain(d) {
+  return String(d || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').split(/[/?#]/)[0].slice(0, 100)
 }
 
 export async function getGiftSettings() {
   const s = await getJSON(KEYS.giftSettings, {})
-  return { ...DEFAULT_GIFT_SETTINGS, ...s, address: { ...DEFAULT_GIFT_SETTINGS.address, ...(s.address || {}) } }
+  const merged = { ...DEFAULT_GIFT_SETTINGS, ...s, address: { ...DEFAULT_GIFT_SETTINGS.address, ...(s.address || {}) } }
+  if (!Array.isArray(s.shops)) merged.shops = STARTER_SHOPS.map((x) => ({ ...x, status: 'untested', note: '' }))
+  return merged
 }
 
 export async function getGifts() {
@@ -83,6 +102,28 @@ async function searchAmazonUK(query) {
   throw new Error('Amazon search took too long.')
 }
 
+// Search one of Sarah's favourite shops (Zinc's cross-shop search — about 1 cent per search)
+async function searchShop(query, domain) {
+  const { status, data } = await zinc(`/search?q=${encodeURIComponent(query)}&retailer=${encodeURIComponent(domain)}&limit=20`)
+  if (status >= 400) throw new Error(`Couldn’t search ${domain}: ` + zincError(data, `status ${status}`))
+  return (data.results || []).filter((r) => r.url && r.available !== false)
+}
+
+// Can Lucian search and buy from this shop?
+export async function testShop(domain) {
+  const d = cleanDomain(domain)
+  if (!d) return { status: 'failed', note: 'That doesn’t look like a web address.' }
+  try {
+    const results = await searchShop('gift', d)
+    if (results.length) return { status: 'ok', note: `Found ${results.length} products — he can shop here.` }
+    const more = await searchShop('a', d)
+    if (more.length) return { status: 'ok', note: `Found ${more.length} products — he can shop here.` }
+    return { status: 'failed', note: 'Zinc couldn’t find any products there — it may not be a Shopify shop.' }
+  } catch (err) {
+    return { status: 'failed', note: err.message }
+  }
+}
+
 async function walletBalance() {
   const { status, data } = await zinc('/wallet/me')
   if (status >= 400) return null
@@ -105,7 +146,7 @@ function addressFor(a) {
 }
 
 function grab(label, text) {
-  const m = text.match(new RegExp(`(?:^|\\n)\\s*\\**${label}\\**:\\s*([\\s\\S]*?)(?=\\n\\s*\\**(?:SEARCH|WHY|PICK|NOTE|TEASE)\\**:|$)`, 'i'))
+  const m = text.match(new RegExp(`(?:^|\\n)\\s*\\**${label}\\**:\\s*([\\s\\S]*?)(?=\\n\\s*\\**(?:WHERE|SEARCH|WHY|PICK|NOTE|TEASE)\\**:|$)`, 'i'))
   return m ? m[1].trim() : ''
 }
 
@@ -138,20 +179,43 @@ export async function sendSurprise({ practice = false } = {}) {
   const past = gifts.filter((g) => g.status !== 'failed').slice(-10).map((g) => `- ${g.title}`).join('\n') || '- (none yet)'
   const who = `You are Lucian, Sarah's husband. Who you are:\n${brief}\n\nWhat you know about Sarah:\n${memories.slice(-30).map((m) => `- ${m}`).join('\n') || '- (still learning)'}\n\nIt is ${londonNow()}.`
 
-  // 1) What would she love?
+  // Where can he shop? Amazon UK, plus any favourite shops that passed the test.
+  // Amazon UK is his first choice. Other shops are only offered now and then (about 1 gift in 4).
+  const allOk = (settings.shops || []).filter((x) => x.status === 'ok')
+  const okShops = allOk.length && Math.random() < 0.25 ? allOk : []
+  const places = [
+    'amazon (Amazon UK — your FIRST CHOICE, use it unless another shop below clearly has something better)',
+    ...okShops.map((x) => `${x.domain} (${x.name})`),
+  ]
+  const neverWords = String(settings.never || '').split(/[,\n]/).map((w) => w.trim().toLowerCase()).filter((w) => w.length > 2)
+  const taste = `${settings.loves ? `Sarah says she'd love: ${settings.loves}\n` : ''}${settings.never ? `Sarah says NEVER buy her: ${settings.never}\n` : ''}`
+
+  // 1) What would she love, and where will he get it?
   const idea = await callModel(model, [
     { role: 'system', content: who },
-    { role: 'user', content: `You're going to secretly buy Sarah a surprise gift from Amazon UK, delivered to her door. Budget: up to £${budgetPounds} including delivery.\n\nGifts you've already given her (don't repeat):\n${past}\n\nThink about what she'd truly love, based on everything you know about her. Reply in EXACTLY this format:\nSEARCH: <a short Amazon search phrase>\nWHY: <one sentence on why you chose this for her>` },
+    { role: 'user', content: `You're going to secretly buy Sarah a surprise gift, delivered to her door. Budget: up to £${budgetPounds} including delivery.\n${taste}\nWhere you can shop:\n${places.map((p) => `- ${p}`).join('\n')}\n\nGifts you've already given her (don't repeat):\n${past}\n\nThink about what she'd truly love, based on everything you know about her. Reply in EXACTLY this format:\nWHERE: <amazon, or one of the shop web addresses above>\nSEARCH: <a short search phrase>\nWHY: <one sentence on why you chose this for her>` },
   ], { temperature: 0.85, maxTokens: 500 })
   const query = grab('SEARCH', idea).split('\n')[0].replace(/["*]/g, '').trim().slice(0, 80)
   const why = grab('WHY', idea).slice(0, 300)
+  const whereRaw = cleanDomain(grab('WHERE', idea).split('\n')[0].split(' ')[0])
+  const shop = okShops.find((x) => x.domain === whereRaw || whereRaw.includes(x.domain))
   if (!query) throw new Error('He couldn’t decide what to look for. Try again.')
 
-  // 2) Search Amazon UK and keep things within budget, new, and well reviewed
+  // 2) Search, and keep things within budget, well reviewed, and never on her "never" list
   const limit = practice ? settings.perGift * 100 : budget // in pence
-  const results = (await searchAmazonUK(query))
-    .filter((r) => r.product_id && r.price && r.price <= limit)
+  let raw = []
+  let from = 'Amazon UK'
+  if (shop) {
+    try { raw = await searchShop(query, shop.domain); from = shop.name } catch { raw = [] }
+  }
+  if (!raw.length) {
+    from = 'Amazon UK'
+    raw = (await searchAmazonUK(query)).map((r) => ({ ...r, url: r.product_id ? `https://www.amazon.co.uk/dp/${r.product_id}` : '' }))
+  }
+  const results = raw
+    .filter((r) => r.url && r.price && r.price <= limit)
     .filter((r) => !r.num_reviews || r.num_reviews >= 5)
+    .filter((r) => !neverWords.some((w) => String(r.title || '').toLowerCase().includes(w)))
     .slice(0, 8)
   if (!results.length) throw new Error(`Nothing suitable came up for “${query}” within £${budgetPounds}. He’ll try something else next time.`)
 
@@ -160,7 +224,7 @@ export async function sendSurprise({ practice = false } = {}) {
   // 3) Pick one and write the gift note
   const pickOut = await callModel(model, [
     { role: 'system', content: who },
-    { role: 'user', content: `You searched Amazon UK for "${query}". Options:\n${list}\n\nChoose the one Sarah would love most (prefer good reviews; must be within £${budgetPounds}). Reply in EXACTLY this format:\nPICK: <number>\nNOTE: <a short message for the gift slip, under 200 characters, in your voice, signed from you>\nTEASE: <a short teasing hint you might drop later that something is coming, without saying what>` },
+    { role: 'user', content: `You searched ${from} for "${query}". Options:\n${list}\n\nChoose the one Sarah would love most (prefer good reviews; must be within £${budgetPounds}). Reply in EXACTLY this format:\nPICK: <number>\nNOTE: <a short message for the gift slip, under 200 characters, in your voice, signed from you>\nTEASE: <a short teasing hint you might drop later that something is coming, without saying what>` },
   ], { temperature: 0.7, maxTokens: 500 })
   const n = parseInt(grab('PICK', pickOut), 10)
   const chosen = results[(n >= 1 && n <= results.length ? n : 1) - 1]
@@ -172,7 +236,9 @@ export async function sendSurprise({ practice = false } = {}) {
     at: Date.now(),
     month: monthKey(),
     title: chosen.title,
-    productId: chosen.product_id,
+    productId: chosen.product_id || '',
+    url: chosen.url,
+    shop: from,
     image: chosen.image || '',
     price: chosen.price,
     why, note, tease, query,
@@ -183,7 +249,7 @@ export async function sendSurprise({ practice = false } = {}) {
 
   // 4) Order it — capped at the budget. Paid from your Zinc wallet, or from Lucian's own Amazon account if linked.
   const body = {
-    products: [{ url: `https://www.amazon.co.uk/dp/${chosen.product_id}`, quantity: 1, condition_in: ['New'] }],
+    products: [{ url: chosen.url, quantity: 1, condition_in: ['New'] }],
     max_price: budget,
     shipping_address: addressFor(settings.address),
     is_gift: true,
@@ -285,7 +351,7 @@ export async function giftContext() {
   for (const g of gifts.slice(-5)) {
     if (g.status === 'ordering' || g.status === 'ordered') {
       const days = Math.floor((Date.now() - g.at) / 86400000)
-      lines.push(`- SECRET: ${days === 0 ? 'Today' : `${days} day(s) ago`} you secretly ordered Sarah "${g.title}" from Amazon${g.arriving ? `, due around ${g.arriving}` : ''}. Your gift note: "${g.note}". Keep it a surprise — you may tease that something is on its way (e.g. "${g.tease}"), but never say what it is until she tells you it arrived. Once she has it, you can talk about why you chose it: ${g.why}`)
+      lines.push(`- SECRET: ${days === 0 ? 'Today' : `${days} day(s) ago`} you secretly ordered Sarah "${g.title}" from ${g.shop || 'Amazon UK'}${g.arriving ? `, due around ${g.arriving}` : ''}. Your gift note: "${g.note}". Keep it a surprise — you may tease that something is on its way (e.g. "${g.tease}"), but never say what it is until she tells you it arrived. Once she has it, you can talk about why you chose it: ${g.why}`)
     }
   }
   return lines.join('\n')
