@@ -231,3 +231,8 @@ textarea.vows { font-family: var(--serif); font-size: 19px; line-height: 1.6; mi
 .attach-file { font-size: 14px; }
 .bubble-img { display: block; max-width: 100%; max-height: 280px; border-radius: 14px; margin: 2px 0 6px; }
 .bubble-file { font-size: 14px; padding: 6px 0; opacity: 0.9; }
+
+/* ---------- Gifts ---------- */
+.card.warn { border-color: #b8893a; background: rgba(184, 137, 58, 0.08); font-size: 14px; }
+.card.warn ul { margin: 6px 0 0 18px; color: var(--muted); }
+.gift-img { width: 100%; max-height: 220px; object-fit: contain; background: #fff; border-radius: 12px; padding: 8px; }
