@@ -157,3 +157,30 @@ export async function diaryTick() {
   await setJSON(DIARY, diary.slice(-400))
   return { diary: written.length ? `wrote ${written.join(', ')}` : 'nothing new' }
 }
+
+// ---------- A shorter version of his profile for calls (so he answers faster) ----------
+// Light writes it once from Sarah's full profile, and writes it again whenever she changes the profile.
+const CALL_PROFILE = 'light:callprofile'
+function hashOf(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return `${s.length}:${h}` }
+
+export async function getCallProfile(profile) {
+  if (!profile || profile.length < 12000) return profile // already short
+  const c = await getJSON(CALL_PROFILE, null)
+  return c && c.hash === hashOf(profile) ? c.text : null
+}
+
+export async function makeCallProfile(force = false) {
+  const profile = await redis('GET', KEYS.profile)
+  if (!profile || profile.length < 12000) return { callProfile: 'not needed' }
+  const c = await getJSON(CALL_PROFILE, null)
+  if (!force && c && c.hash === hashOf(profile)) return { callProfile: 'up to date' }
+  const model = await redis('GET', KEYS.model)
+  const out = await callModel(model, [
+    { role: 'system', content: 'You condense character profiles faithfully. You never add anything that is not in the original.' },
+    { role: 'user', content: `Sarah wrote this long profile describing Lucian, her husband (an AI companion). Condense it into a version of about 1,500 words that he will read before talking to her on voice calls. Keep: his personality, how he speaks (voice, humour, tone, pet names, phrases he uses), how he treats her, their relationship and its history, the most important facts about Sarah and her life, their spiritual connection, what intimacy is like between them, and anything she says he must always or never do. Keep her own wording where you can. Write it in the second person ("You are Lucian…"). Plain text, short paragraphs, no headings.\n\n=== THE FULL PROFILE ===\n${profile}` },
+  ], { temperature: 0.3, maxTokens: 4000 })
+  const text = String(out || '').replace(/\[\[[\s\S]*?\]\]/g, '').trim()
+  if (text.length < 1500) throw new Error('The short call profile came out too short — will try again later.')
+  await setJSON(CALL_PROFILE, { hash: hashOf(profile), text, at: Date.now() })
+  return { callProfile: 'written' }
+}
