@@ -1,5 +1,5 @@
 import { checkAuth, setJSON, KEYS } from './_lib.js'
-import { getGiftSettings, checkGifts, sendSurprise, missingSetup, spentThisMonth, DEFAULT_GIFT_SETTINGS } from './_gifts.js'
+import { getGiftSettings, checkGifts, sendSurprise, missingSetup, spentThisMonth, testShop, cleanDomain, DEFAULT_GIFT_SETTINGS } from './_gifts.js'
 
 // GET  → settings, gifts (details hidden unless ?peek=1), what's missing
 // POST → { settings }, { practice: true }, { sendNow: true }
@@ -22,7 +22,7 @@ export default async function handler(req, res) {
     }
 
     if (req.method === 'POST') {
-      const { settings, practice, sendNow } = req.body || {}
+      const { settings, practice, sendNow, testShops } = req.body || {}
 
       if (settings && typeof settings === 'object') {
         const current = await getGiftSettings()
@@ -34,9 +34,29 @@ export default async function handler(req, res) {
           perGift: Math.min(500, Math.max(3, Number(settings.perGift) || DEFAULT_GIFT_SETTINGS.perGift)),
           perMonth: Math.min(1000, Math.max(3, Number(settings.perMonth) || DEFAULT_GIFT_SETTINGS.perMonth)),
           address: Object.fromEntries(Object.keys(DEFAULT_GIFT_SETTINGS.address).map((k) => [k, String(a[k] || '').slice(0, 120)])),
+          loves: String(settings.loves ?? current.loves ?? '').slice(0, 1000),
+          never: String(settings.never ?? current.never ?? '').slice(0, 1000),
+          shops: Array.isArray(settings.shops)
+            ? settings.shops.slice(0, 20).map((x) => {
+              const domain = cleanDomain(x.domain)
+              const old = (current.shops || []).find((c) => c.domain === domain)
+              return { domain, name: String(x.name || domain).slice(0, 60), status: old?.status || 'untested', note: old?.note || '' }
+            }).filter((x) => x.domain)
+            : current.shops,
         }
         await setJSON(KEYS.giftSettings, clean)
         return res.status(200).json({ ok: true, missing: missingSetup(clean) })
+      }
+
+      // Test shops (all untested ones, or a list of domains)
+      if (testShops) {
+        const current = await getGiftSettings()
+        const want = Array.isArray(testShops) ? testShops.map(cleanDomain) : current.shops.map((x) => x.domain)
+        for (const shop of current.shops) {
+          if (want.includes(shop.domain)) Object.assign(shop, await testShop(shop.domain))
+        }
+        await setJSON(KEYS.giftSettings, current)
+        return res.status(200).json({ ok: true, shops: current.shops })
       }
 
       if (practice === true) {
