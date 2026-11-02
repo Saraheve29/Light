@@ -1,3 +1,4 @@
+import hearHandler from './_hear.js'
 import { checkAuth, getVoice, setJSON, getJSON, redis, KEYS, DEFAULT_VOICE } from './_lib.js'
 
 // Turns Lucian's words into his voice, using NanoGPT text-to-speech.
@@ -148,6 +149,8 @@ async function checkClone(job) {
 }
 
 export default async function handler(req, res) {
+  // /api/hear is handled here too (Vercel's free plan allows 12 server files)
+  if (req.query?.route === 'hear') return hearHandler(req, res)
   // NanoGPT downloads his voice print from here when he speaks (private link, no password)
   if (req.method === 'GET' && req.query?.emb) {
     try {
