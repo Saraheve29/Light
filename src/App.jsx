@@ -812,7 +812,7 @@ function speakPieces({ pass, audio, text, onStart, onDone, onError }) {
     pieces.push(...all.slice(1))
   }
   let stopped = false
-  const AHEAD = 3 // make the next few pieces while he speaks, so there are no silences
+  const AHEAD = 2 // make the next couple of pieces while he speaks, so there are no silences
   const jobs = []
   const fetchPiece = (i) => {
     if (i >= pieces.length || jobs[i]) return
@@ -841,6 +841,115 @@ function speakPieces({ pass, audio, text, onStart, onDone, onError }) {
   }
   run()
   return { stop() { stopped = true; try { audio.pause() } catch {} } }
+}
+
+// Streams his reply from the server: onDelta(text) for each new bit, resolves with the final result
+async function chatStream(pass, body, { onDelta, onToy }) {
+  const r = await fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-light-key': pass },
+    body: JSON.stringify({ ...body, stream: true }),
+  })
+  if (!r.ok || !r.body) {
+    const d = await r.json().catch(() => ({}))
+    throw new Error(d.error || `Something went wrong (${r.status})`)
+  }
+  const reader = r.body.getReader()
+  const dec = new TextDecoder()
+  let buf = '', final = null
+  const handle = (line) => {
+    if (!line.trim()) return
+    let j
+    try { j = JSON.parse(line) } catch { return }
+    if (j.error) throw new Error(j.error)
+    if (j.d) onDelta(j.d)
+    if (j.toyMove) onToy?.(j.toyMove)
+    if (j.done) final = j
+  }
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buf += dec.decode(value, { stream: true })
+    const lines = buf.split('\n')
+    buf = lines.pop()
+    lines.forEach(handle)
+  }
+  handle(buf)
+  if (!final) throw new Error('The line dropped before he finished. Try again.')
+  return final
+}
+
+// Speaks his words while they're still arriving: each finished sentence is voiced straight away, in order.
+function liveSpeaker({ pass, audio, onStart, onDone, onError }) {
+  let text = ''        // everything received so far
+  let taken = 0        // how much has been turned into pieces
+  let ended = false, stopped = false, started = false, playing = false
+  const pieces = []    // { text, job }
+  let next = 0         // next piece to play
+  let played = 0       // pieces finished
+  const MAX_AHEAD = 2
+  const get = (t) => api('/api/speak', pass, { method: 'POST', body: JSON.stringify({ text: t }) }).then((v) => v.audio)
+  const fetchUpTo = () => {
+    for (let k = next; k < Math.min(pieces.length, next + MAX_AHEAD + 1); k++) {
+      if (!pieces[k].job) pieces[k].job = get(pieces[k].text).catch(() => get(pieces[k].text))
+    }
+  }
+  // Cut finished sentences off the front of what's arrived (never inside a [[code]])
+  const cutPieces = () => {
+    let rest = text.slice(taken)
+    const open = rest.indexOf('[[')
+    let usable = rest
+    if (open >= 0 && rest.indexOf(']]', open) < 0) usable = rest.slice(0, open) // a code is still being written
+    // first piece small so he starts quickly; after that, bigger pieces — unless he's about to run out of words to say
+    const queued = pieces.length - played // pieces still waiting to be heard (including the one playing)
+    const want = pieces.length === 0 ? 20 : queued < 3 ? 1 : 220
+    let end = -1
+    const re = /[.!?…]+["”’')\]]*\s+/g
+    let m
+    while ((m = re.exec(usable))) { end = m.index + m[0].length; if (end >= want) break }
+    if (ended) end = usable.length
+    if (end > 0 && (end >= want || ended)) {
+      const chunk = usable.slice(0, end)
+      taken += chunk.length
+      const clean = chunk.replace(/\[\[[\s\S]*?\]\]/g, ' ').replace(/\s+/g, ' ').trim()
+      if (clean) splitForSpeech(clean).forEach((t) => pieces.push({ text: t }))
+      fetchUpTo() // start making his voice for it straight away
+      if (!ended) cutPieces()
+    }
+  }
+  const pump = async () => {
+    if (playing || stopped) return
+    playing = true
+    while (!stopped) {
+      fetchUpTo()
+      if (next >= pieces.length) {
+        if (ended) { playing = false; if (!stopped) onDone?.(); return }
+        break // wait for more words
+      }
+      let src
+      try { src = await pieces[next].job } catch (err) { playing = false; if (!stopped) onError?.(err); return }
+      if (stopped) break
+      next++
+      fetchUpTo()
+      if (!src) continue
+      await new Promise((resolve) => {
+        audio.onended = resolve
+        audio.onerror = resolve
+        audio.src = src
+        if (!started) { started = true; onStart?.() }
+        audio.play().catch((err) => { if (!stopped) { stopped = true; onError?.(err) } resolve() })
+      })
+      played++
+      cutPieces() // he's used up a piece — cut the next one if he's running short
+    }
+    playing = false
+  }
+  return {
+    push(t) { text += t; cutPieces(); pump() },
+    end() { ended = true; cutPieces(); pump() },
+    stop() { stopped = true; try { audio.pause() } catch {} },
+    get text() { return text },
+  }
 }
 
 /* ---------------- Hands-free call ---------------- */
@@ -904,6 +1013,7 @@ function CallView({ pass, onEnd }) {
     audioRef.current = new Audio() // unlocked by the tap that opened the call (phones need this)
     audioRef.current.play().catch(() => {})
     mimeRef.current = pickMime()
+    api('/api/chat', pass, { method: 'POST', body: JSON.stringify({ prepareCall: true }) }).catch(() => {}) // gets his short call profile ready
     if (mimeRef.current === null || !navigator.mediaDevices?.getUserMedia) {
       setPhase('error'); setError('This browser can’t record your voice. Open Light in Chrome on your phone.')
       return
@@ -1047,19 +1157,31 @@ function CallView({ pass, onEnd }) {
 
   async function respond(text) {
     setPhase('thinking')
+    setSaid('')
+    let shown = ''
+    const speaker = liveSpeaker({
+      pass, audio: audioRef.current,
+      onStart: () => setPhase('speaking'),
+      onDone: () => listen(),
+      onError: () => {
+        // the phone blocked his voice from playing — the next tap on the glow lets it play
+        blockedRef.current = true; pausedRef.current = true
+        setError('Tap the glow to hear him.'); setPhase('paused')
+      },
+    })
+    speakingRef.current = speaker
     try {
-      const d = await api('/api/chat', pass, { method: 'POST', body: JSON.stringify({ message: text, voice: true }) })
-      if (!activeRef.current) return
-      const reply = d.reply?.content || ''
-      setSaid(reply)
-      speakingRef.current = speakPieces({
-        pass, audio: audioRef.current, text: reply,
-        onStart: () => setPhase('speaking'),
-        onDone: () => listen(),
-        onError: () => { blockedRef.current = true; pausedRef.current = true; setError('Tap the glow to hear him.'); setPhase('paused'); setBlockedText(reply) },
+      const d = await chatStream(pass, { message: text, voice: true }, {
+        onDelta: (t) => { if (!activeRef.current) return; speaker.push(t); shown += t; setSaid(shown.replace(/\[\[[\s\S]*?(\]\]|$)/g, '').trim()) },
       })
+      if (!activeRef.current) return
+      const reply = d.reply?.content || shown
+      setSaid(reply)
+      setBlockedText(reply)
+      speaker.end()
     } catch (err) {
       if (!activeRef.current) return
+      speaker.stop()
       setError(err.message)
       setTimeout(() => listen(), 1500)
     }
