@@ -1,9 +1,12 @@
 import { checkAuth } from './_lib.js'
+import printHandler from './_printapi.js'
 import { getLetters, getLetterSettings, saveLetterSettings, writeLetter } from './_letters.js'
 
 // GET  → his letters (newest first) and the letter schedule
 // POST → { settings } | { writeNow: true }
 export default async function handler(req, res) {
+  // /api/print (poem cards) is handled here too (Vercel's free plan allows 12 server files)
+  if (req.query?.route === 'print') return printHandler(req, res)
   if (!checkAuth(req, res)) return
 
   try {
