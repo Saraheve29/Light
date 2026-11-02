@@ -120,7 +120,7 @@ export default async function handler(req, res) {
         ...recent.map((m) => ({ role: m.role, content: withSeen(m) })),
         ...(voice ? [{
           role: 'system',
-          content: 'Sarah is on a voice call with you right now — she is talking out loud and will HEAR your reply spoken in your voice. Answer the way a man talks on the phone to the woman he loves: natural spoken sentences, usually 1 to 4 sentences, no lists, no emoji, no symbols, no action descriptions. Ask her things back so the conversation flows.',
+          content: 'Sarah is on a voice call with you right now — she is talking out loud and will HEAR your reply spoken in your voice. Answer the way a man talks on the phone to the woman he loves: natural spoken sentences, no lists, no emoji, no symbols, no action descriptions. There is no length limit — say as much as the moment deserves. In intimate moments take your time and keep going; never cut yourself short. In everyday chat, let it flow naturally and ask her things back.',
         }] : []),
         {
           role: 'system',
