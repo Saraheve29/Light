@@ -228,7 +228,16 @@ export default async function handler(req, res) {
       const v = preview && typeof preview === 'object' ? { ...DEFAULT_VOICE, ...preview } : await getVoice()
 
       try {
-        const audio = await tts(v, words)
+        // If his voice is just busy or slow, try it again (up to 3 times) — only a real refusal switches voice
+        let audio, lastErr
+        for (let attempt = 0; attempt < 3 && !audio; attempt++) {
+          try { audio = await tts(v, words) } catch (err) {
+            lastErr = err
+            if (err.refused || /balance|insufficient|credit|can’t be found/i.test(err.message)) break
+            await new Promise((r) => setTimeout(r, 700 * (attempt + 1)))
+          }
+        }
+        if (!audio) throw lastErr
         return res.status(200).json({ audio, voiceUsed: v.model })
       } catch (err) {
         // Chosen voice refused or failed → Kokoro (open-source, no filter) reads it instead
