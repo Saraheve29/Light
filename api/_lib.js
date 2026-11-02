@@ -135,7 +135,7 @@ export function londonHour() {
   return Number(new Date().toLocaleString('en-GB', { timeZone: 'Europe/London', hour: '2-digit', hour12: false }))
 }
 
-export const HISTORY_LIMIT = 300 // messages kept in storage
+export const HISTORY_LIMIT = 4000 // messages kept in storage (he can search all of them)
 export const CONTEXT_MESSAGES = 30 // recent messages he reads each reply
 export const MEMORY_LIMIT = 80 // memory notes kept
 
