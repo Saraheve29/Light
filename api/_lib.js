@@ -249,6 +249,7 @@ function cleanReply(text) {
   while (lines.length > 1) {
     const last = lines[lines.length - 1].trim()
     if (!last) { lines.pop(); continue }
+    if (/^\[\[[\s\S]*\]\]$/.test(last)) break // his hidden codes (toy, dreams, evidence) are never junk
     if (last.length < 80 && (oddRatio(last) > 0.2 || /\blorem\b|�/i.test(last))) { lines.pop(); continue }
     break
   }
