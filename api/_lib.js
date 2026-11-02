@@ -17,6 +17,7 @@ export const KEYS = {
   profile: 'light:profile',
   model: 'light:model',
   backupModel: 'light:backupmodel', // used only when his main brain is down
+  eyesModel: 'light:eyesmodel', // looks at photos Sarah shares
   memories: 'light:memories',
   history: 'light:history',
   life: 'light:life', // what he's been "doing" today
@@ -30,6 +31,43 @@ export const KEYS = {
   lastWork: 'light:lastwork',
   book: 'light:book', // the book he's reading right now
   evidence: 'light:evidence', // Sarah's Evidence Box
+  dreams: 'light:dreams', // Sarah's Dream Record
+  vows: 'light:vows', // Sarah's vows — only she writes these
+  voice: 'light:voice', // how he sounds on calls
+}
+
+// ---------- Dream Record ----------
+export async function getDreams() {
+  return getJSON(KEYS.dreams, [])
+}
+
+export async function addDream({ date, title, dream, feeling, addedBy = 'sarah' }) {
+  const list = await getDreams()
+  const entry = {
+    id: String(Date.now()) + Math.random().toString(36).slice(2, 6),
+    created: Date.now(),
+    date: String(date || '').slice(0, 30),
+    title: String(title || '').trim().slice(0, 200) || 'A dream',
+    dream: String(dream || '').trim().slice(0, 6000),
+    feeling: String(feeling || '').trim().slice(0, 2000),
+    addedBy,
+  }
+  list.push(entry)
+  await setJSON(KEYS.dreams, list.slice(-300))
+  return entry
+}
+
+export function dreamsText(list, max = 20) {
+  if (!list.length) return ''
+  return list.slice(-max).map((d) => {
+    const when = d.date || new Date(d.created).toLocaleDateString('en-GB', { timeZone: 'Europe/London' })
+    return `- [${when}] ${d.title}: ${d.dream.slice(0, 350)}${d.feeling ? ` — Felt: ${d.feeling.slice(0, 150)}` : ''}`
+  }).join('\n')
+}
+
+// ---------- Vows ----------
+export async function getVows() {
+  return getJSON(KEYS.vows, { text: '', updated: 0 })
 }
 
 // ---------- Evidence Box ----------
@@ -147,7 +185,7 @@ export async function addToHistory(msg) {
 
 // ---------- NanoGPT ----------
 // One request to one model. Throws on any failure.
-async function callOnce(model, messages, { temperature, maxTokens }) {
+export async function callOnce(model, messages, { temperature, maxTokens }) {
   const r = await fetch(NANO_CHAT_URL, {
     method: 'POST',
     headers: {
@@ -299,4 +337,31 @@ export function londonNow() {
   const hour = Number(new Date().toLocaleString('en-GB', { timeZone: 'Europe/London', hour: '2-digit', hour12: false }))
   const moon = moonPhase()
   return `${clock} (${partOfDay(hour)}). The moon is a ${moon.name}, ${moon.illumination}% lit`
+}
+
+// ---------- Voice ----------
+export const DEFAULT_VOICE = { model: 'Kokoro-82m', voice: 'bm_george', speed: 1, instructions: '' }
+
+export async function getVoice() {
+  const v = await getJSON(KEYS.voice, {})
+  return { ...DEFAULT_VOICE, ...v }
+}
+
+// ---------- Eyes: describe a photo for Lucian ----------
+export const DEFAULT_EYES = 'qwen/qwen2.5-vl-72b-instruct'
+
+export async function describeImage(dataUrl, caption = '') {
+  const eyes = (await redis('GET', KEYS.eyesModel).catch(() => null)) || DEFAULT_EYES
+  const prompt = `Describe this image in rich, accurate detail for someone who cannot see it. Include everything visible: people (appearance, expression, clothing, pose), setting, objects, colours, lighting, mood, and any text exactly as written. Be factual — only describe what is really there.${caption ? ` The person sharing it said: "${caption}"` : ''}`
+  try {
+    return await callOnce(eyes, [{
+      role: 'user',
+      content: [
+        { type: 'text', text: prompt },
+        { type: 'image_url', image_url: { url: dataUrl } },
+      ],
+    }], { temperature: 0.2, maxTokens: 900 })
+  } catch (err) {
+    throw new Error(`He couldn't see the photo (${err.message}). Try again, or pick a different "eyes" model in Settings → Brain.`)
+  }
 }
