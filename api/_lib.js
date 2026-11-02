@@ -34,6 +34,8 @@ export const KEYS = {
   dreams: 'light:dreams', // Sarah's Dream Record
   vows: 'light:vows', // Sarah's vows — only she writes these
   voice: 'light:voice', // how he sounds on calls
+  gifts: 'light:gifts', // surprise gifts he's sent
+  giftSettings: 'light:giftsettings', // address, budget, how often
 }
 
 // ---------- Dream Record ----------
