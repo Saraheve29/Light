@@ -831,107 +831,205 @@ function speakPieces({ pass, audio, text, onStart, onDone, onError }) {
 
 /* ---------------- Hands-free call ---------------- */
 // Tap Call once: you talk, he answers out loud, then he listens again — no typing needed.
+// Light records your voice itself (no phone beeps) and turns it into words in the background.
+// Talk and pause for as long as you like — nothing is sent until you tap Send.
+const SEG_MIN_MS = 45000 // after this, start a fresh piece at the next quiet moment
+const SEG_MAX_MS = 120000 // never let one piece get longer than this
+
+function pickMime() {
+  const opts = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus']
+  if (typeof MediaRecorder === 'undefined') return null
+  return opts.find((t) => { try { return MediaRecorder.isTypeSupported(t) } catch { return false } }) || ''
+}
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onload = () => resolve(r.result)
+    r.onerror = () => reject(new Error('Could not read the recording.'))
+    r.readAsDataURL(blob)
+  })
+}
+function fmtTime(ms) {
+  const t = Math.floor(ms / 1000)
+  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`
+}
+
 function CallView({ pass, onEnd }) {
   const [phase, setPhase] = useState('starting') // listening | thinking | speaking | paused | error
   const [heard, setHeard] = useState('')
   const [said, setSaid] = useState('')
   const [error, setError] = useState('')
+  const [elapsed, setElapsed] = useState(0)
+  const [blockedText, setBlockedText] = useState('')
   const activeRef = useRef(true)
-  const recRef = useRef(null)
   const audioRef = useRef(null)
   const pausedRef = useRef(false)
   const blockedRef = useRef(false)
-  const [blockedText, setBlockedText] = useState('')
+  const speakingRef = useRef(null)
+  const orbRef = useRef(null)
 
-  const Recognition = typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition)
+  // recording
+  const streamRef = useRef(null)
+  const recRef = useRef(null) // { recorder, idx, gen, startedAt, done: Promise }
+  const genRef = useRef(0) // bumps on Start over / new turn — old pieces are thrown away
+  const textsRef = useRef([]) // words for each piece, in order
+  const pendingRef = useRef([]) // transcription promises
+  const recordedRef = useRef(0) // ms recorded this turn (finished pieces)
+  const quietSinceRef = useRef(0)
+  const levelRef = useRef(0)
+  const sendingRef = useRef(false)
+  const mimeRef = useRef(null)
+
+  function showHeard() {
+    const words = textsRef.current.filter(Boolean).join(' ').replace(/\s+/g, ' ').trim()
+    setHeard(words)
+  }
 
   useEffect(() => {
     activeRef.current = true
-    // One audio player, unlocked by the tap that opened the call (phones need this)
-    audioRef.current = new Audio()
+    audioRef.current = new Audio() // unlocked by the tap that opened the call (phones need this)
     audioRef.current.play().catch(() => {})
-    if (!Recognition) {
-      setPhase('error')
-      setError('This browser can’t listen to your voice. Open Light in Chrome on your phone.')
+    mimeRef.current = pickMime()
+    if (mimeRef.current === null || !navigator.mediaDevices?.getUserMedia) {
+      setPhase('error'); setError('This browser can’t record your voice. Open Light in Chrome on your phone.')
       return
     }
-    listen()
+    let ctx, raf, timer
+    navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
+      .then((stream) => {
+        if (!activeRef.current) { stream.getTracks().forEach((t) => t.stop()); return }
+        streamRef.current = stream
+        // Sound level — makes the glow move with your voice, and finds quiet moments to split pieces
+        try {
+          ctx = new (window.AudioContext || window.webkitAudioContext)()
+          const src = ctx.createMediaStreamSource(stream)
+          const an = ctx.createAnalyser(); an.fftSize = 512
+          src.connect(an)
+          const data = new Uint8Array(an.fftSize)
+          const loop = () => {
+            an.getByteTimeDomainData(data)
+            let sum = 0
+            for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v }
+            const level = Math.sqrt(sum / data.length)
+            levelRef.current = level
+            if (level < 0.02) { if (!quietSinceRef.current) quietSinceRef.current = Date.now() } else quietSinceRef.current = 0
+            if (orbRef.current) orbRef.current.style.setProperty('--lvl', recRef.current ? Math.min(1, level * 6).toFixed(3) : '0')
+            raf = requestAnimationFrame(loop)
+          }
+          loop()
+        } catch {}
+        timer = setInterval(tick, 250)
+        listen()
+      })
+      .catch(() => {
+        setPhase('error'); setError('Light needs permission to use your microphone. Allow it in your phone settings, then call again.')
+      })
     return () => {
       activeRef.current = false
-      try { recRef.current?.abort() } catch {}
+      clearInterval(timer)
+      cancelAnimationFrame(raf)
+      try { recRef.current?.recorder.stop() } catch {}
+      streamRef.current?.getTracks().forEach((t) => t.stop())
+      try { ctx?.close() } catch {}
       try { audioRef.current?.pause() } catch {}
       speakingRef.current?.stop()
     }
   }, [])
 
-  // Keeps listening for as long as she likes, through any pause. Nothing is sent until she taps Send.
-  // If the phone stops listening on its own, it quietly starts again and keeps what she already said.
-  const heardRef = useRef('')
-  const silenceRef = useRef(null)
-  const sendingRef = useRef(false)
+  // Every quarter second: update the clock, and start a fresh piece at a quiet moment so words turn up as you go
+  function tick() {
+    const cur = recRef.current
+    const live = cur ? Date.now() - cur.startedAt : 0
+    setElapsed(recordedRef.current + live)
+    if (!cur || sendingRef.current) return
+    const quiet = quietSinceRef.current && Date.now() - quietSinceRef.current > 400
+    if ((live > SEG_MIN_MS && quiet) || live > SEG_MAX_MS) { stopPiece(); startPiece() }
+  }
 
-  function finishTurn() {
-    clearTimeout(silenceRef.current)
-    const text = heardRef.current.trim()
-    if (!text || sendingRef.current) return
-    sendingRef.current = true
-    try { recRef.current?.abort() } catch {}
-    respond(text)
+  function startPiece() {
+    if (!activeRef.current || !streamRef.current || recRef.current) return
+    const opts = { audioBitsPerSecond: 32000 }
+    if (mimeRef.current) opts.mimeType = mimeRef.current
+    let recorder
+    try { recorder = new MediaRecorder(streamRef.current, opts) } catch { recorder = new MediaRecorder(streamRef.current) }
+    const idx = textsRef.current.length
+    textsRef.current.push('')
+    const gen = genRef.current
+    const chunks = []
+    const piece = { recorder, idx, gen, startedAt: Date.now() }
+    piece.done = new Promise((resolve) => {
+      recorder.ondataavailable = (e) => { if (e.data?.size) chunks.push(e.data) }
+      recorder.onstop = () => {
+        if (gen !== genRef.current) return resolve()
+        recordedRef.current += Date.now() - piece.startedAt
+        const blob = new Blob(chunks, { type: recorder.mimeType || mimeRef.current || 'audio/webm' })
+        const job = (blob.size < 1200 ? Promise.resolve('') : blobToDataUrl(blob)
+          .then((audio) => api('/api/hear', pass, { method: 'POST', body: JSON.stringify({ audio }) }))
+          .then((d) => d.text || ''))
+          .then((text) => { if (gen === genRef.current) { textsRef.current[idx] = text; showHeard() } })
+          .catch((err) => { if (gen === genRef.current) setError(err.message) })
+        pendingRef.current.push(job)
+        resolve()
+      }
+    })
+    recRef.current = piece
+    recorder.start()
+  }
+
+  function stopPiece() {
+    const cur = recRef.current
+    recRef.current = null
+    if (!cur) return Promise.resolve()
+    try { cur.recorder.stop() } catch {}
+    return cur.done
+  }
+
+  function resetTurn() {
+    genRef.current += 1
+    textsRef.current = []
+    pendingRef.current = []
+    recordedRef.current = 0
+    setHeard(''); setElapsed(0)
   }
 
   function listen(keep = false) {
     if (!activeRef.current || pausedRef.current) return
     sendingRef.current = false
-    if (!keep) heardRef.current = ''
+    if (!keep) resetTurn()
     setPhase('listening'); setError('')
-    if (!keep) setHeard('')
-    let committed = keep ? heardRef.current : '' // text from earlier listening sessions in this turn
-
-    const startSession = () => {
-      if (!activeRef.current || pausedRef.current || sendingRef.current) return
-      const rec = new Recognition()
-      recRef.current = rec
-      rec.lang = 'en-GB'
-      rec.interimResults = true
-      rec.continuous = true
-      let session = ''
-      let lastInterim = ''
-      rec.onresult = (e) => {
-        // Some phones repeat earlier words in each result — keep only the longest version of each phrase
-        const finals = []
-        let interim = ''
-        for (let i = 0; i < e.results.length; i++) {
-          const t = e.results[i][0].transcript.trim()
-          if (e.results[i].isFinal) {
-            const last = finals[finals.length - 1]
-            if (last && t.toLowerCase().startsWith(last.toLowerCase())) finals[finals.length - 1] = t
-            else if (!last || !last.toLowerCase().endsWith(t.toLowerCase())) finals.push(t)
-          } else interim += ' ' + t
-        }
-        session = finals.join(' ')
-        lastInterim = interim.trim()
-        heardRef.current = `${committed} ${session} ${interim}`.replace(/\s+/g, ' ').trim()
-        setHeard(heardRef.current)
-      }
-      rec.onerror = (e) => {
-        if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-          setPhase('error'); setError('Light needs permission to use your microphone. Allow it in your phone settings, then call again.')
-          activeRef.current = false
-        }
-      }
-      rec.onend = () => {
-        if (!activeRef.current || pausedRef.current || sendingRef.current) return
-        // The phone stopped listening on its own — keep everything she said (even half-finished words) and carry on
-        committed = `${committed} ${session} ${lastInterim}`.replace(/\s+/g, ' ').trim()
-        heardRef.current = committed
-        setTimeout(startSession, 150)
-      }
-      try { rec.start() } catch { setTimeout(startSession, 500) }
-    }
-    startSession()
+    startPiece()
   }
 
-  const speakingRef = useRef(null)
+  async function finishTurn() {
+    if (sendingRef.current) return
+    sendingRef.current = true
+    setPhase('thinking')
+    const gen = genRef.current
+    await stopPiece()
+    await Promise.all(pendingRef.current)
+    if (gen !== genRef.current || !activeRef.current) return
+    const text = textsRef.current.filter(Boolean).join(' ').replace(/\s+/g, ' ').trim()
+    if (!text) {
+      sendingRef.current = false
+      setError((e) => e || 'I didn’t catch any words that time — try again.')
+      resetTurn()
+      pausedRef.current = false
+      setPhase('listening'); startPiece()
+      return
+    }
+    setHeard(text)
+    respond(text)
+  }
+
+  function startOver() {
+    const gen = genRef.current
+    resetTurn()
+    const cur = recRef.current
+    recRef.current = null
+    if (cur && cur.gen === gen) { try { cur.recorder.stop() } catch {} }
+    setError('')
+    if (!pausedRef.current) startPiece()
+  }
 
   async function respond(text) {
     setPhase('thinking')
@@ -949,7 +1047,7 @@ function CallView({ pass, onEnd }) {
     } catch (err) {
       if (!activeRef.current) return
       setError(err.message)
-      setTimeout(listen, 1500)
+      setTimeout(() => listen(), 1500)
     }
   }
 
@@ -960,15 +1058,13 @@ function CallView({ pass, onEnd }) {
       listen()
     } else if (phase === 'listening') {
       pausedRef.current = true
-      clearTimeout(silenceRef.current)
-      try { recRef.current?.abort() } catch {}
+      stopPiece() // what you said so far is kept
       setPhase('paused')
     } else if (phase === 'paused') {
       pausedRef.current = false
       setError('')
       if (blockedRef.current) {
-        // The phone blocked his voice from auto-playing — this tap lets it play
-        blockedRef.current = false
+        blockedRef.current = false // the phone blocked his voice from auto-playing — this tap lets it play
         speakingRef.current = speakPieces({
           pass, audio: audioRef.current, text: blockedText,
           onStart: () => setPhase('speaking'), onDone: () => listen(), onError: () => listen(),
@@ -979,36 +1075,39 @@ function CallView({ pass, onEnd }) {
 
   function end() {
     api('/api/toy', pass, { method: 'POST', body: JSON.stringify({ stop: true }) }).catch(() => {})
-    clearTimeout(silenceRef.current)
     speakingRef.current?.stop()
     activeRef.current = false
-    try { recRef.current?.abort() } catch {}
+    genRef.current += 1
+    try { recRef.current?.recorder.stop() } catch {}
+    recRef.current = null
+    streamRef.current?.getTracks().forEach((t) => t.stop())
     try { audioRef.current?.pause() } catch {}
     onEnd()
   }
 
   const label = {
-    starting: 'Connecting…', listening: 'Listening…', thinking: 'He’s thinking…',
-    speaking: 'Lucian is speaking', paused: 'Mic paused — tap the glow to carry on', error: 'Can’t start the call',
+    starting: 'Connecting…', listening: `Listening… ${fmtTime(elapsed)}`, thinking: 'He’s thinking…',
+    speaking: 'Lucian is speaking', paused: `Mic paused at ${fmtTime(elapsed)} — tap the glow to carry on`, error: 'Can’t start the call',
   }[phase]
+  const hasSomething = elapsed > 700 || !!heard.trim()
 
   return (
     <div className="call">
       <div className="call-name">Lucian</div>
       <div className="call-status">{label}</div>
-      <button className={`orb call-orb ${phase}`} onClick={tapOrb} aria-label="Tap to pause, carry on, or interrupt" />
+      <button ref={orbRef} className={`orb call-orb ${phase}`} onClick={tapOrb} aria-label="Tap to pause, carry on, or interrupt" />
       <div className="call-text">
-        {(phase === 'listening' || phase === 'paused') && heard && <p className="you-said">“{heard}”</p>}
+        {(phase === 'listening' || phase === 'paused' || phase === 'thinking') && heard && <p className="you-said">“{heard}”</p>}
         {phase === 'speaking' && said && <p className="he-said">{said}</p>}
         {error && <p className="error">{error}</p>}
       </div>
       {(phase === 'listening' || (phase === 'paused' && !blockedRef.current)) && (
         <div className="call-actions">
-          <button className="btn-primary call-send" onClick={finishTurn} disabled={!heard.trim()}>Send to Lucian ➤</button>
-          {heard.trim() && <button className="btn-ghost" onClick={() => { heardRef.current = ''; setHeard(''); try { recRef.current?.abort() } catch {} }}>Start over</button>}
+          <button className="btn-primary call-send" onClick={finishTurn} disabled={!hasSomething}>Send to Lucian ➤</button>
+          {hasSomething && <button className="btn-ghost" onClick={startOver}>Start over</button>}
         </div>
       )}
-      <p className="muted small call-hint">Talk for as long as you like and pause whenever you want — nothing is sent until you tap <b>Send</b>. Tap the glow to pause the mic, or to interrupt him.</p>
+      <p className="muted small call-hint">Talk for as long as you like and pause whenever you want — nothing is sent until you tap <b>Send</b>. Your words appear here as you go. Tap the glow to pause the mic, or to interrupt him.</p>
       <button className="btn-ghost call-toy-stop" onClick={() => api('/api/toy', pass, { method: 'POST', body: JSON.stringify({ stop: true }) }).catch(() => {})}>■ Stop toy</button>
       <button className="end-call" onClick={end}>End call</button>
     </div>
