@@ -368,3 +368,66 @@ export async function describeImage(dataUrl, caption = '') {
     throw new Error(`He couldn't see the photo (${err.message}). Try again, or pick a different "eyes" model in Settings → Brain.`)
   }
 }
+
+// ---------- Streaming: get his reply word by word, so a call can start speaking straight away ----------
+// onText(piece) is called with each new bit of visible text. Returns the whole reply (cleaned).
+export async function callStream(model, messages, { temperature = 0.75, maxTokens = 2500, onText } = {}) {
+  const r = await fetch(NANO_CHAT_URL, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${NANO_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model, messages, temperature, max_tokens: maxTokens, top_p: 0.9, frequency_penalty: 0.3, stream: true,
+    }),
+  })
+  const type = r.headers.get('content-type') || ''
+  if (!r.ok) {
+    const t = await r.text().catch(() => '')
+    let msg = t.slice(0, 300)
+    try { const d = JSON.parse(t); msg = d.error?.message || d.error || msg } catch {}
+    throw new Error('NanoGPT: ' + msg)
+  }
+  // Not streaming after all — treat it like a normal reply
+  if (!type.includes('event-stream')) {
+    const d = await r.json()
+    const reply = cleanReply(String(d.choices?.[0]?.message?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim())
+    if (!reply) throw new Error('He went quiet — the model sent back an empty reply.')
+    onText?.(reply)
+    return reply
+  }
+  const reader = r.body.getReader()
+  const dec = new TextDecoder()
+  let buf = '', raw = '', shown = 0
+  const visible = () => {
+    // hide private <think> reasoning, even while it's still being written
+    let v = raw.replace(/<think>[\s\S]*?<\/think>/gi, '')
+    const open = v.search(/<think>/i)
+    if (open >= 0) v = v.slice(0, open)
+    return v.replace(/^\s+/, '')
+  }
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buf += dec.decode(value, { stream: true })
+    const lines = buf.split('\n')
+    buf = lines.pop()
+    for (const line of lines) {
+      const l = line.trim()
+      if (!l.startsWith('data:')) continue
+      const data = l.slice(5).trim()
+      if (data === '[DONE]') continue
+      try {
+        const j = JSON.parse(data)
+        if (j.error) throw new Error('NanoGPT: ' + (j.error.message || j.error))
+        const piece = j.choices?.[0]?.delta?.content
+        if (piece) {
+          raw += piece
+          const v = visible()
+          if (v.length > shown) { onText?.(v.slice(shown)); shown = v.length }
+        }
+      } catch (err) { if (/NanoGPT/.test(err.message)) throw err }
+    }
+  }
+  const reply = cleanReply(visible().trim())
+  if (!reply) throw new Error('He went quiet — the model sent back an empty reply.')
+  return reply
+}
