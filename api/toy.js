@@ -1,5 +1,5 @@
 import { checkAuth } from './_lib.js'
-import { getToy, saveToy, getQrCode, handleCallback, stopToy, runMove, toyReady, hasDevToken } from './_toy.js'
+import { getToy, saveToy, getQrCode, handleCallback, stopToy, runMove, toyReady, hasDevToken, maxSecondsFor } from './_toy.js'
 
 // GET  → toy status
 // POST → { pair: true } QR code | { allowed: bool } | { stop: true } | { test: 'vibrate'|'rotate' } | { forget: true }
@@ -23,11 +23,19 @@ export default async function handler(req, res) {
         connectedAt: t.connectedAt,
         ready: toyReady(t),
         lastCommand: t.lastCommand,
+        maxSeconds: maxSecondsFor(t),
       })
     }
 
     if (req.method === 'POST') {
-      const { pair, allowed, stop, test, forget } = req.body || {}
+      const { pair, allowed, stop, test, forget, maxSeconds } = req.body || {}
+
+      if (maxSeconds != null) {
+        const t = await getToy()
+        t.maxSeconds = maxSecondsFor({ maxSeconds })
+        await saveToy(t)
+        return res.status(200).json({ ok: true, maxSeconds: t.maxSeconds })
+      }
 
       if (stop) { await stopToy(); return res.status(200).json({ ok: true }) }
 
@@ -49,7 +57,8 @@ export default async function handler(req, res) {
 
       if (forget) {
         await stopToy().catch(() => {})
-        await saveToy({ allowed: false, toys: {}, utoken: '', connectedAt: 0 })
+        const old = await getToy()
+        await saveToy({ allowed: false, toys: {}, utoken: '', connectedAt: 0, maxSeconds: old.maxSeconds })
         return res.status(200).json({ ok: true })
       }
 
