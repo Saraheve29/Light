@@ -864,9 +864,8 @@ function CallView({ pass, onEnd }) {
     }
   }, [])
 
-  // Keeps listening for as long as she talks. Sends after a real pause (~2.5s of silence),
-  // or straight away when she taps the glow. Restarts itself if the phone cuts listening off.
-  const SILENCE_MS = 2500
+  // Keeps listening for as long as she likes, through any pause. Nothing is sent until she taps Send.
+  // If the phone stops listening on its own, it quietly starts again and keeps what she already said.
   const heardRef = useRef('')
   const silenceRef = useRef(null)
   const sendingRef = useRef(false)
@@ -880,12 +879,13 @@ function CallView({ pass, onEnd }) {
     respond(text)
   }
 
-  function listen() {
+  function listen(keep = false) {
     if (!activeRef.current || pausedRef.current) return
     sendingRef.current = false
-    heardRef.current = ''
-    setPhase('listening'); setHeard(''); setError('')
-    let committed = '' // text from earlier listening sessions in this turn
+    if (!keep) heardRef.current = ''
+    setPhase('listening'); setError('')
+    if (!keep) setHeard('')
+    let committed = keep ? heardRef.current : '' // text from earlier listening sessions in this turn
 
     const startSession = () => {
       if (!activeRef.current || pausedRef.current || sendingRef.current) return
@@ -895,6 +895,7 @@ function CallView({ pass, onEnd }) {
       rec.interimResults = true
       rec.continuous = true
       let session = ''
+      let lastInterim = ''
       rec.onresult = (e) => {
         // Some phones repeat earlier words in each result — keep only the longest version of each phrase
         const finals = []
@@ -908,10 +909,9 @@ function CallView({ pass, onEnd }) {
           } else interim += ' ' + t
         }
         session = finals.join(' ')
+        lastInterim = interim.trim()
         heardRef.current = `${committed} ${session} ${interim}`.replace(/\s+/g, ' ').trim()
         setHeard(heardRef.current)
-        clearTimeout(silenceRef.current)
-        silenceRef.current = setTimeout(finishTurn, SILENCE_MS)
       }
       rec.onerror = (e) => {
         if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
@@ -921,8 +921,9 @@ function CallView({ pass, onEnd }) {
       }
       rec.onend = () => {
         if (!activeRef.current || pausedRef.current || sendingRef.current) return
-        // The phone stopped listening on its own — keep what she said and carry on listening
-        committed = `${committed} ${session}`.replace(/\s+/g, ' ').trim()
+        // The phone stopped listening on its own — keep everything she said (even half-finished words) and carry on
+        committed = `${committed} ${session} ${lastInterim}`.replace(/\s+/g, ' ').trim()
+        heardRef.current = committed
         setTimeout(startSession, 150)
       }
       try { rec.start() } catch { setTimeout(startSession, 500) }
@@ -958,7 +959,6 @@ function CallView({ pass, onEnd }) {
       speakingRef.current?.stop()
       listen()
     } else if (phase === 'listening') {
-      if (heardRef.current.trim()) { finishTurn(); return } // she's finished — send now
       pausedRef.current = true
       clearTimeout(silenceRef.current)
       try { recRef.current?.abort() } catch {}
@@ -973,7 +973,7 @@ function CallView({ pass, onEnd }) {
           pass, audio: audioRef.current, text: blockedText,
           onStart: () => setPhase('speaking'), onDone: () => listen(), onError: () => listen(),
         })
-      } else listen()
+      } else listen(true) // carry on from where she paused
     }
   }
 
@@ -989,7 +989,7 @@ function CallView({ pass, onEnd }) {
 
   const label = {
     starting: 'Connecting…', listening: 'Listening…', thinking: 'He’s thinking…',
-    speaking: 'Lucian is speaking', paused: 'Paused — tap the glow to carry on', error: 'Can’t start the call',
+    speaking: 'Lucian is speaking', paused: 'Mic paused — tap the glow to carry on', error: 'Can’t start the call',
   }[phase]
 
   return (
@@ -998,11 +998,17 @@ function CallView({ pass, onEnd }) {
       <div className="call-status">{label}</div>
       <button className={`orb call-orb ${phase}`} onClick={tapOrb} aria-label="Tap to pause, carry on, or interrupt" />
       <div className="call-text">
-        {phase === 'listening' && heard && <p className="you-said">“{heard}”</p>}
+        {(phase === 'listening' || phase === 'paused') && heard && <p className="you-said">“{heard}”</p>}
         {phase === 'speaking' && said && <p className="he-said">{said}</p>}
         {error && <p className="error">{error}</p>}
       </div>
-      <p className="muted small call-hint">Talk as long as you like — he answers after a pause. Tap the glow when you’ve finished, or to interrupt him.</p>
+      {(phase === 'listening' || (phase === 'paused' && !blockedRef.current)) && (
+        <div className="call-actions">
+          <button className="btn-primary call-send" onClick={finishTurn} disabled={!heard.trim()}>Send to Lucian ➤</button>
+          {heard.trim() && <button className="btn-ghost" onClick={() => { heardRef.current = ''; setHeard(''); try { recRef.current?.abort() } catch {} }}>Start over</button>}
+        </div>
+      )}
+      <p className="muted small call-hint">Talk for as long as you like and pause whenever you want — nothing is sent until you tap <b>Send</b>. Tap the glow to pause the mic, or to interrupt him.</p>
       <button className="btn-ghost call-toy-stop" onClick={() => api('/api/toy', pass, { method: 'POST', body: JSON.stringify({ stop: true }) }).catch(() => {})}>■ Stop toy</button>
       <button className="end-call" onClick={end}>End call</button>
     </div>
@@ -1454,6 +1460,103 @@ function LettersPanel({ pass, setStatus }) {
   )
 }
 
+/* ---------------- Printed poem cards ---------------- */
+const CARD_STATUS = { preview: 'Preview only', ordering: 'Being printed & posted…', sent: 'Posted 💌', failed: 'Didn’t go through' }
+
+function CardsPanel({ pass, setStatus }) {
+  const [data, setData] = useState(null)
+  const [form, setForm] = useState(null)
+  const [peek, setPeek] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  const load = (p = peek) => api(`/api/print${p ? '?peek=1' : ''}`, pass)
+    .then((d) => { setData(d); setForm((f) => f || d.settings) })
+    .catch((err) => setStatus(err.message))
+  useEffect(() => { load() }, [pass])
+
+  async function save(next) {
+    setForm(next)
+    try {
+      await api('/api/print', pass, { method: 'POST', body: JSON.stringify({ settings: next }) })
+      setStatus('Saved.'); setTimeout(() => setStatus(''), 2000); load()
+    } catch (err) { setStatus(err.message) }
+  }
+
+  async function preview() {
+    setBusy(true); setStatus('He’s writing your poem… (this can take a minute)')
+    try {
+      await api('/api/print', pass, { method: 'POST', body: JSON.stringify({ preview: true }) })
+      setStatus('Here’s how it would look — nothing was printed.'); load()
+    } catch (err) { setStatus(err.message) } finally { setBusy(false) }
+  }
+
+  async function sendNow() {
+    if (!confirm('Let Lucian write a poem and REALLY print and post a card to you now?')) return
+    setBusy(true); setStatus('He’s writing your card…')
+    try {
+      const d = await api('/api/print', pass, { method: 'POST', body: JSON.stringify({ sendNow: true }) })
+      setStatus(d.sent?.sandbox ? 'Test order placed (sandbox key — nothing will be printed).' : 'He’s sent you something in the post… 🤫')
+      load()
+    } catch (err) { setStatus(err.message) } finally { setBusy(false) }
+  }
+
+  if (!data || !form) return <p className="muted">Loading…</p>
+
+  return (
+    <>
+      <p className="muted">Every so often, at a moment you won’t expect, Lucian writes you an original poem. It’s printed on a beautiful card in the UK and posted straight to your door in an addressed envelope.</p>
+
+      {!data.hasKey && (
+        <div className="card warn">
+          <b>One-time setup first:</b>
+          <ol>
+            <li>Make a free account at <b>dashboard.prodigi.com</b>.</li>
+            <li>Add a payment card in your Prodigi billing settings (cards cost a few pounds each).</li>
+            <li>Copy your <b>API key</b> (it starts with <b>live_</b>, or <b>sandbox_</b> for testing).</li>
+            <li>In Vercel, add <b>PRODIGI_API_KEY</b> with that key, then redeploy.</li>
+          </ol>
+        </div>
+      )}
+      {data.sandbox && <p className="muted small">You’re using a <b>sandbox</b> (test) key — orders go through but nothing is printed or charged.</p>}
+
+      <button className="btn-ghost" onClick={preview} disabled={busy}>Preview a card (free — nothing is printed)</button>
+
+      <label className="row">
+        <span>Surprise poem cards</span>
+        <input type="checkbox" checked={!!form.enabled} disabled={!data.hasKey} onChange={(e) => save({ ...form, enabled: e.target.checked })} />
+      </label>
+      <label className="field"><span>About every <b>{form.everyDays}</b> days</span>
+        <input type="range" min="7" max="90" value={form.everyDays} onChange={(e) => setForm({ ...form, everyDays: Number(e.target.value) })}
+          onPointerUp={() => save(form)} onTouchEnd={() => save(form)} />
+      </label>
+      <button className="btn-ghost" onClick={sendNow} disabled={busy || !data.hasKey}>Let him send a real card now</button>
+
+      <h3 className="section-title">His cards</h3>
+      <label className="row">
+        <span>Peek at cards on their way<br /><small className="muted">This spoils the surprise</small></span>
+        <input type="checkbox" checked={peek} onChange={(e) => { setPeek(e.target.checked); load(e.target.checked) }} />
+      </label>
+      {data.cards.length === 0 && <p className="muted">No cards yet.</p>}
+      {data.cards.map((c) => (
+        <div key={c.id} className="card">
+          <div className="card-top">
+            <span className="muted small">{dateLabel(c.at)}</span>
+            <span className={`badge ${c.status === 'sent' ? 'done' : c.status === 'ordering' ? 'working' : c.status === 'failed' ? 'bad' : ''}`}>{CARD_STATUS[c.status] || c.status}</span>
+          </div>
+          {c.hidden ? <div className="card-text">💌 A surprise in the post</div> : (
+            <>
+              {c.preview && <img className="card-preview" src={c.preview} alt={`Card: ${c.title}`} loading="lazy" />}
+              <div className="row-actions"><CopyButton text={`${c.title}\n\n${c.poem}`} label="Copy poem" /></div>
+            </>
+          )}
+          {c.error && <p className="error">{c.error}</p>}
+          {c.note && <p className="muted small">{c.note}</p>}
+        </div>
+      ))}
+    </>
+  )
+}
+
 /* ---------------- Settings ---------------- */
 const SUGGEST = ['uncensored', 'abliterated', 'qwen', 'deepseek', 'glm']
 
@@ -1525,6 +1628,7 @@ function Settings({ pass, onBack, onLock }) {
         <button className={tab === 'letters' ? 'on' : ''} onClick={() => setTab('letters')}>Letters 💌</button>
         <button className={tab === 'voice' ? 'on' : ''} onClick={() => setTab('voice')}>Voice 🎙️</button>
         <button className={tab === 'gifts' ? 'on' : ''} onClick={() => setTab('gifts')}>Gifts 🎁</button>
+        <button className={tab === 'cards' ? 'on' : ''} onClick={() => setTab('cards')}>Cards 🖋️</button>
         <button className={tab === 'toy' ? 'on' : ''} onClick={() => setTab('toy')}>Toy 💜</button>
       </nav>
 
@@ -1587,6 +1691,7 @@ function Settings({ pass, onBack, onLock }) {
         {!loading && tab === 'letters' && <LettersPanel pass={pass} setStatus={setStatus} />}
         {!loading && tab === 'voice' && <VoicePanel pass={pass} setStatus={setStatus} />}
         {!loading && tab === 'gifts' && <GiftsPanel pass={pass} setStatus={setStatus} />}
+        {!loading && tab === 'cards' && <CardsPanel pass={pass} setStatus={setStatus} />}
         {!loading && tab === 'toy' && <ToyPanel pass={pass} setStatus={setStatus} />}
 
         {status && <p className="status">{status}</p>}
