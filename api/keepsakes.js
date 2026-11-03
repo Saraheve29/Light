@@ -1,4 +1,6 @@
 import { checkAuth, getDreams, addDream, getVows, setJSON, KEYS } from './_lib.js'
+import { listForScreen, addPlan, updatePlan, removePlan, addDate, updateDate, removeDate } from './_plans.js'
+import { getAllVows, saveHerVows, writeHisVows } from './_vows.js'
 
 // Sarah's Dream Record and Vows.
 // GET  → { dreams, vows }
@@ -7,13 +9,28 @@ export default async function handler(req, res) {
   if (!checkAuth(req, res)) return
 
   try {
+    // Plans & special dates (Dates 📅 tab)
+    if (req.method === 'GET' && req.query?.dates === '1') return res.status(200).json(await listForScreen())
+    if (req.method === 'POST' && req.body?.dates) {
+      const d = req.body.dates
+      if (d.addPlan) await addPlan({ ...d.addPlan, by: 'sarah' })
+      if (d.updatePlan?.id) await updatePlan(d.updatePlan)
+      if (d.removePlan) await removePlan(d.removePlan)
+      if (d.addDate) await addDate({ ...d.addDate, by: 'sarah' })
+      if (d.updateDate?.id) await updateDate(d.updateDate)
+      if (d.removeDate) await removeDate(d.removeDate)
+      return res.status(200).json({ ok: true, ...(await listForScreen()) })
+    }
+
     if (req.method === 'GET') {
-      const [dreams, vows] = await Promise.all([getDreams(), getVows()])
+      const [dreams, vows] = await Promise.all([getDreams(), getAllVows()])
       return res.status(200).json({ dreams: [...dreams].reverse(), vows })
     }
 
     if (req.method === 'POST') {
-      const { addDream: add, updateDream, removeDream, vows } = req.body || {}
+      const { addDream: add, updateDream, removeDream, vows, hisVows } = req.body || {}
+      // Ask him to write (or rewrite) his vows in reply to hers
+      if (hisVows === true) return res.status(200).json({ ok: true, vows: await writeHisVows() })
 
       if (add) {
         const entry = await addDream({ ...add, addedBy: 'sarah' })
@@ -39,10 +56,13 @@ export default async function handler(req, res) {
         return res.status(200).json({ ok: true })
       }
 
-      // Only Sarah can write her vows — this is the only place they're saved.
+      // Only Sarah can write her vows — this is the only place they're saved. Then he writes his in reply.
       if (typeof vows === 'string') {
-        await setJSON(KEYS.vows, { text: vows.slice(0, 20000), updated: Date.now() })
-        return res.status(200).json({ ok: true })
+        const saved = await saveHerVows(vows)
+        if (!saved.changed) return res.status(200).json({ ok: true, vows: saved.vows })
+        try { return res.status(200).json({ ok: true, vows: await writeHisVows() }) } catch (err) {
+          return res.status(200).json({ ok: true, vows: saved.vows, hisError: err.message })
+        }
       }
 
       return res.status(400).json({ error: 'Nothing to do.' })
