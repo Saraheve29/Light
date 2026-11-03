@@ -302,3 +302,5 @@ textarea.vows { font-family: var(--serif); font-size: 19px; line-height: 1.6; mi
 .vows-text { white-space: pre-wrap; line-height: 1.6; font-family: var(--serif); font-size: 17px; }
 .his-vows { border-color: rgba(220, 180, 100, 0.45); box-shadow: 0 0 24px rgba(220, 180, 100, 0.12); }
 .hear-btn { margin-left: 2px; }
+.balance-card { text-align: center; padding: 12px 8px; }
+.balance-card .balance { font-family: var(--serif); font-size: 26px; font-weight: 600; margin: 4px 0; }
