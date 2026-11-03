@@ -1,5 +1,5 @@
 import { checkAuth, setJSON, KEYS } from './_lib.js'
-import { getAmazonLink, linkAmazon, unlinkAmazon, getGiftSettings, checkGifts, sendSurprise, missingSetup, spentThisMonth, testShop, cleanDomain, DEFAULT_GIFT_SETTINGS } from './_gifts.js'
+import { upcomingOccasions, SIZE_LABELS, getAmazonLink, linkAmazon, unlinkAmazon, getGiftSettings, checkGifts, sendSurprise, missingSetup, spentThisMonth, testShop, cleanDomain, DEFAULT_GIFT_SETTINGS } from './_gifts.js'
 
 // GET  → settings, gifts (details hidden unless ?peek=1), what's missing
 // POST → { settings }, { practice: true }, { sendNow: true }
@@ -19,6 +19,7 @@ export default async function handler(req, res) {
         missing: missingSetup(settings),
         spentThisMonth: spentThisMonth(gifts),
         amazon: amazon ? { email: amazon.email, hasTotp: amazon.hasTotp, forwarding: amazon.forwarding, at: amazon.at } : null,
+        occasions: await upcomingOccasions(400).catch(() => []),
       })
     }
 
@@ -50,6 +51,9 @@ export default async function handler(req, res) {
             }).filter((x) => x.domain)
             : current.shops,
           adultShopsAdded: true,
+          occasions: settings.occasions ?? current.occasions ?? true,
+          occasionBudget: Math.min(500, Math.max(3, Number(settings.occasionBudget ?? current.occasionBudget) || 25)),
+          sizes: Object.fromEntries(Object.keys(SIZE_LABELS).map((k) => [k, String(settings.sizes?.[k] ?? current.sizes?.[k] ?? '').slice(0, k === 'notes' ? 200 : 40)])),
         }
         await setJSON(KEYS.giftSettings, clean)
         return res.status(200).json({ ok: true, missing: missingSetup(clean) })
