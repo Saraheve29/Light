@@ -1,5 +1,5 @@
 import { checkAuth, setJSON, KEYS } from './_lib.js'
-import { getGiftSettings, checkGifts, sendSurprise, missingSetup, spentThisMonth, testShop, cleanDomain, DEFAULT_GIFT_SETTINGS } from './_gifts.js'
+import { getAmazonLink, linkAmazon, unlinkAmazon, getGiftSettings, checkGifts, sendSurprise, missingSetup, spentThisMonth, testShop, cleanDomain, DEFAULT_GIFT_SETTINGS } from './_gifts.js'
 
 // GET  → settings, gifts (details hidden unless ?peek=1), what's missing
 // POST → { settings }, { practice: true }, { sendNow: true }
@@ -8,7 +8,7 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === 'GET') {
-      const [settings, gifts] = await Promise.all([getGiftSettings(), checkGifts()])
+      const [settings, gifts, amazon] = await Promise.all([getGiftSettings(), checkGifts(), getAmazonLink().catch(() => null)])
       const peek = req.query?.peek === '1'
       const shown = [...gifts].reverse().map((g) => (peek || g.status === 'failed'
         ? g
@@ -18,11 +18,17 @@ export default async function handler(req, res) {
         gifts: shown,
         missing: missingSetup(settings),
         spentThisMonth: spentThisMonth(gifts),
+        amazon: amazon ? { email: amazon.email, hasTotp: amazon.hasTotp, forwarding: amazon.forwarding, at: amazon.at } : null,
       })
     }
 
     if (req.method === 'POST') {
-      const { settings, practice, sendNow, testShops } = req.body || {}
+      const { settings, practice, sendNow, testShops, linkAmazon: link, unlinkAmazon: unlink } = req.body || {}
+      if (link && typeof link === 'object') {
+        const a = await linkAmazon(link)
+        return res.status(200).json({ ok: true, amazon: { email: a.email, hasTotp: a.hasTotp, forwarding: a.forwarding, at: a.at } })
+      }
+      if (unlink === true) { await unlinkAmazon(); return res.status(200).json({ ok: true }) }
 
       if (settings && typeof settings === 'object') {
         const current = await getGiftSettings()
@@ -37,12 +43,13 @@ export default async function handler(req, res) {
           loves: String(settings.loves ?? current.loves ?? '').slice(0, 1000),
           never: String(settings.never ?? current.never ?? '').slice(0, 1000),
           shops: Array.isArray(settings.shops)
-            ? settings.shops.slice(0, 20).map((x) => {
+            ? settings.shops.slice(0, 40).map((x) => {
               const domain = cleanDomain(x.domain)
               const old = (current.shops || []).find((c) => c.domain === domain)
               return { domain, name: String(x.name || domain).slice(0, 60), status: old?.status || 'untested', note: old?.note || '' }
             }).filter((x) => x.domain)
             : current.shops,
+          adultShopsAdded: true,
         }
         await setJSON(KEYS.giftSettings, clean)
         return res.status(200).json({ ok: true, missing: missingSetup(clean) })
