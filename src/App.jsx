@@ -1759,6 +1759,7 @@ function GiftsPanel({ pass, setStatus }) {
   const [busy, setBusy] = useState(false)
   const [newShop, setNewShop] = useState('')
   const [amz, setAmz] = useState({ email: '', password: '', totp: '' })
+  const [amzBal, setAmzBal] = useState('')
 
   const load = (p = peek) =>
     api(`/api/gifts${p ? '?peek=1' : ''}`, pass)
@@ -1846,6 +1847,27 @@ function GiftsPanel({ pass, setStatus }) {
           <ul>{data.missing.map((m) => <li key={m}>{m}</li>)}</ul>
         </div>
       )}
+
+      <h3 className="section-title">Balances 💷</h3>
+      <div className="two">
+        <div className="card balance-card">
+          <div className="muted small">Amazon gift card</div>
+          <div className="balance">{data.settings.amazonBalance === null || data.settings.amazonBalance === undefined ? '—' : `£${(data.settings.amazonBalance / 100).toFixed(2)}`}</div>
+          <div className="muted small">{data.settings.amazonBalanceAt ? `Kept up to date by Light since ${dateLabel(data.settings.amazonBalanceAt)}` : 'Not set yet'}</div>
+        </div>
+        <div className="card balance-card">
+          <div className="muted small">Zinc wallet</div>
+          <div className="balance">{data.wallet?.balance === null || data.wallet?.balance === undefined ? '—' : `${data.wallet.currency === 'GBP' ? '£' : data.wallet.currency === 'USD' ? '$' : (data.wallet.currency || '') + ' '}${(data.wallet.balance / 100).toFixed(2)}`}</div>
+          <div className="muted small">{data.wallet?.balance === null || data.wallet?.balance === undefined ? 'Couldn’t check just now' : 'Live from Zinc'}</div>
+        </div>
+      </div>
+      <p className="muted small">Amazon won’t let apps read a gift card balance, so Light keeps track: enter it once, and every Amazon gift he sends is taken off automatically (and put back if an order fails). When you top up, enter the new balance here. Before every gift he checks both — if one is too low, he chooses from the other.</p>
+      <div className="row">
+        <input type="number" min="0" step="0.01" value={amzBal} onChange={(e) => setAmzBal(e.target.value)} placeholder="Amazon gift card balance £" />
+        <button className="btn-ghost" disabled={amzBal === ''} onClick={async () => {
+          try { await api('/api/gifts', pass, { method: 'POST', body: JSON.stringify({ amazonBalance: amzBal }) }); setAmzBal(''); setStatus('Amazon gift card balance updated 💷'); load() } catch (err) { setStatus(err.message) }
+        }}>Update</button>
+      </div>
 
       <h3 className="section-title">Link your Amazon account</h3>
       {data.amazon ? (
@@ -1948,6 +1970,18 @@ function GiftsPanel({ pass, setStatus }) {
         )) : <p className="muted small">None yet.</p>}
         {!(data.occasions || []).some((o) => /birthday/i.test(o.name)) && <p className="muted small">Add <b>“My birthday”</b> (and your anniversary) in the <b>Dates 📅</b> tab so he knows when they are.</p>}
       </div>
+      <h3 className="section-title">Monthly hotel visit 🏨</h3>
+      <label className="row">
+        <span>A gift for each hotel visit<br /><small className="muted">When you’ve booked, tell him (e.g. “I’ve booked our hotel for Saturday the 21st”) or add “Hotel visit” in Dates 📅. He chooses something for it — bath bombs, a bubble set, massage oil, whatever he likes — so it arrives before the day, then tells you he’s bought you something.</small></span>
+        <input type="checkbox" checked={form.hotelGifts !== false} onChange={(e) => setForm({ ...form, hotelGifts: e.target.checked })} />
+      </label>
+      <label className="field"><span>Max for a hotel-visit gift (£)</span><input type="number" min="3" value={form.hotelBudget ?? 15} onChange={setF('hotelBudget')} /></label>
+      <div className="card">
+        {(data.hotels || []).length ? data.hotels.map((h) => (
+          <div key={h.key} className="muted small">• <b>{h.name}</b> — {new Date(h.date + 'T12:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'long' })} ({h.days === 0 ? 'today' : `in ${h.days} days`}){h.days < 3 ? ' — too soon for a delivery' : ''}</div>
+        )) : <p className="muted small">No hotel visit booked yet.</p>}
+      </div>
+
       <p className="muted small">Before every order, Light checks there’s money in your Zinc wallet. It can’t see Lucian’s Amazon gift card balance — keep that topped up for Amazon gifts.</p>
 
       <label className="row">
