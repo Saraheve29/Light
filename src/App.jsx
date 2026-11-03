@@ -1494,6 +1494,7 @@ function CallView({ pass, onEnd, incoming = false }) {
 }
 
 /* ---------------- Voice settings ---------------- */
+const ZINC_STATUS = { pending: 'waiting to start', in_progress: 'placing the order now', order_placed: 'order confirmed', order_failed: 'order failed', cancelled: 'cancelled', cancelled_by_retailer: 'cancelled by the shop' }
 const QWEN = 'Qwen-3-TTS-1.7B'
 const VOICE_MODELS = [
   { id: QWEN, label: 'Qwen 3 — most natural open-source voice (make his voice below)', voices: [] },
@@ -1873,6 +1874,11 @@ function GiftsPanel({ pass, setStatus }) {
       {data.amazon ? (
         <div className="card">
           <p>✓ Linked: <b>{data.amazon.email}</b>{data.amazon.hasTotp ? ' · 2-step code set' : ''}</p>
+          {data.amazon.checked && !data.amazon.hasForwarding && (
+            <p className="error">⚠️ Email forwarding isn’t set up yet. Amazon usually sends a code by email when Zinc logs in — without forwarding, Zinc can’t read it, and his orders get stuck in the basket. Set up forwarding below.</p>
+          )}
+          {data.amazon.checked && data.amazon.hasForwarding && <p className="muted small">✓ Email forwarding is working.</p>}
+          {data.amazon.paused && <p className="error">⚠️ Zinc has paused this Amazon account.</p>}
           {data.amazon.forwarding && (
             <p className="muted small">Amazon sometimes emails a code when Zinc logs in. Set up Gmail to forward emails from amazon.co.uk to: <b>{data.amazon.forwarding}</b> <CopyButton text={data.amazon.forwarding} /></p>
           )}
@@ -2025,9 +2031,17 @@ function GiftsPanel({ pass, setStatus }) {
               {g.why && <p className="journal-note"><b>Why:</b> {g.why}</p>}
               {g.note && <p className="journal-note"><b>Gift note:</b> {g.note}</p>}
             </>)}
+          {g.status === 'ordering' && (
+            <div className="muted small">
+              Zinc: <b>{ZINC_STATUS[g.zincStatus] || g.zincStatus || 'starting…'}</b>
+              {g.steps?.length > 0 && <> · {g.steps.join(' → ')}</>}
+              {g.zincError && <div className="error">Zinc says: {g.zincError}</div>}
+            </div>
+          )}
           {g.error && <p className="error">{g.error}</p>}
         </div>
       ))}
+      {data.gifts.some((g) => g.status === 'ordering') && <button className="btn-ghost" onClick={() => load()}>↻ Check on his order</button>}
     </>
   )
 }
