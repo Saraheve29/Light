@@ -18,6 +18,7 @@ export const KEYS = {
   model: 'light:model',
   backupModel: 'light:backupmodel', // used only when his main brain is down
   eyesModel: 'light:eyesmodel', // looks at photos Sarah shares
+  callModel: 'light:callmodel', // optional faster brain just for voice calls
   memories: 'light:memories',
   history: 'light:history',
   life: 'light:life', // what he's been "doing" today
