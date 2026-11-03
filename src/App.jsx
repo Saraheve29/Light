@@ -170,10 +170,16 @@ function shrink(img, maxSide, quality) {
   return c.toDataURL('image/jpeg', quality)
 }
 
-async function prepareAttachment(file) {
+// "Read his new messages aloud" — remembered on this phone
+function autoSpeak() { try { return localStorage.getItem('light-autospeak') === '1' } catch { return false } }
+function setAutoSpeak(on) { try { localStorage.setItem('light-autospeak', on ? '1' : '0') } catch {} }
+
+const MAX_PHOTOS = 10
+async function prepareAttachment(file, many = false) {
   if (file.type.startsWith('image/')) {
     const img = await loadImage(file)
-    return { kind: 'image', name: file.name, image: shrink(img, 1280, 0.85), thumb: shrink(img, 360, 0.6) }
+    // several photos at once are made a little smaller so they all fit in one message
+    return { kind: 'image', name: file.name, image: shrink(img, many ? 1024 : 1280, many ? 0.8 : 0.85), thumb: shrink(img, many ? 240 : 360, 0.6) }
   }
   if (file.type.startsWith('text/') || /\.(txt|md|csv|json)$/i.test(file.name)) {
     if (file.size > 300000) throw new Error('That file is too big — try one under 300 KB.')
@@ -187,12 +193,29 @@ function Chat({ pass, onOpenSettings, onLock, onCall }) {
   const [text, setText] = useState('')
   const [typing, setTyping] = useState(false)
   const [notice, setNotice] = useState('')
-  const [attachment, setAttachment] = useState(null)
+  const [attachments, setAttachments] = useState([]) // photos (up to 10) and/or a text file
   const [toyOn, setToyOn] = useState(false)
   const [toyActive, setToyActive] = useState(false)
   const fileRef = useRef(null)
   const [error, setError] = useState('')
   const endRef = useRef(null)
+  // Hear his messages in his voice
+  const [playing, setPlaying] = useState(null) // the time-stamp of the message being read aloud
+  const hearAudioRef = useRef(null)
+  const hearRef = useRef(null)
+  function hear(m) {
+    hearRef.current?.stop()
+    if (playing === m.at) { setPlaying(null); return }
+    if (!hearAudioRef.current) hearAudioRef.current = new Audio()
+    hearAudioRef.current.play().catch(() => {}) // unlocks sound on phones (this tap counts)
+    setPlaying(m.at)
+    hearRef.current = speakPieces({
+      pass, audio: hearAudioRef.current, text: m.content,
+      onDone: () => setPlaying(null),
+      onError: (err) => { setPlaying(null); setError(err.message) },
+    })
+  }
+  useEffect(() => () => hearRef.current?.stop(), [])
   const inputRef = useRef(null)
 
   useEffect(() => {
@@ -219,20 +242,34 @@ function Chat({ pass, onOpenSettings, onLock, onCall }) {
   async function send(e) {
     e?.preventDefault()
     const msg = text.trim()
-    const att = attachment
-    if ((!msg && !att) || typing) return
-    setText(''); setError(''); setAttachment(null)
-    setMessages((m) => [...m, { role: 'user', content: msg, at: Date.now(), thumb: att?.thumb, file: att?.kind === 'file' ? att.name : undefined }])
+    const atts = attachments
+    const photos = atts.filter((a) => a.kind === 'image')
+    const file = atts.find((a) => a.kind === 'file')
+    if ((!msg && !atts.length) || typing) return
+    // unlock sound now, while she's tapping Send, so his reply can be read aloud when it arrives
+    if (autoSpeak()) { if (!hearAudioRef.current) hearAudioRef.current = new Audio(); hearAudioRef.current.play().catch(() => {}) }
+    setText(''); setError(''); setAttachments([])
+    setMessages((m) => [...m, {
+      role: 'user', content: msg, at: Date.now(),
+      thumb: photos.length === 1 ? photos[0].thumb : undefined,
+      thumbs: photos.length > 1 ? photos.map((p) => p.thumb) : undefined,
+      file: file?.name,
+    }])
     setTyping(true)
+    if (photos.length > 1) setNotice(`👀 He’s looking at all ${photos.length} photos…`)
     try {
       const body = { message: msg }
-      if (att?.kind === 'image') { body.image = att.image; body.thumb = att.thumb }
-      if (att?.kind === 'file') { body.fileText = att.text; body.fileName = att.name }
+      if (photos.length === 1) { body.image = photos[0].image; body.thumb = photos[0].thumb }
+      if (photos.length > 1) { body.images = photos.map((p) => p.image); body.thumbs = photos.map((p) => p.thumb) }
+      if (file) { body.fileText = file.text; body.fileName = file.name }
       const d = await api('/api/chat', pass, { method: 'POST', body: JSON.stringify(body) })
       setMessages((m) => [...m, d.reply])
+      if (autoSpeak() && d.reply?.content) hear(d.reply) // she chose to have his messages read aloud
+      setNotice('')
       const notes = []
       if (d.evidenceAdded?.length) notes.push(`✦ Lucian added “${d.evidenceAdded.join('”, “')}” to your Evidence Box`)
       if (d.dreamsAdded?.length) notes.push(`🌙 Lucian wrote down your dream “${d.dreamsAdded.join('”, “')}”`)
+      if (d.vowsWritten) notes.push('💍 Lucian wrote his vows to you — they’re in Vows 💍')
       if (d.toyMove?.error) notes.push('💜 ' + d.toyMove.error)
       else if (d.toyMove) {
         const stopped = d.toyMove.action === 'Stop'
@@ -246,8 +283,9 @@ function Chat({ pass, onOpenSettings, onLock, onCall }) {
       if (d.shouldRemember) api('/api/remember', pass, { method: 'POST' }).catch(() => {})
     } catch (err) {
       setError(err.message)
+      setNotice('')
       setText(msg) // give her message back so nothing is lost
-      if (att) setAttachment(att)
+      if (atts.length) setAttachments(atts)
     } finally {
       setTyping(false)
       inputRef.current?.focus()
@@ -255,10 +293,25 @@ function Chat({ pass, onOpenSettings, onLock, onCall }) {
   }
 
   async function onPick(e) {
-    const file = e.target.files?.[0]
+    const files = [...(e.target.files || [])]
     e.target.value = ''
-    if (!file) return
-    try { setAttachment(await prepareAttachment(file)) } catch (err) { setError(err.message) }
+    if (!files.length) return
+    setError('')
+    const have = attachments.filter((a) => a.kind === 'image').length
+    const pics = files.filter((f) => f.type.startsWith('image/'))
+    const many = have + pics.length > 1
+    const room = MAX_PHOTOS - have
+    if (pics.length > room) setError(`He can look at up to ${MAX_PHOTOS} photos at once — I’ve added the first ${Math.max(0, room)}.`)
+    const keep = [...pics.slice(0, Math.max(0, room)), ...files.filter((f) => !f.type.startsWith('image/')).slice(0, 1)]
+    try {
+      const ready = []
+      for (const f of keep) ready.push(await prepareAttachment(f, many))
+      setAttachments((cur) => {
+        // if this makes several photos, shrink the ones already chosen too isn't needed — they're already small enough
+        const withoutFile = ready.some((r) => r.kind === 'file') ? cur.filter((c) => c.kind !== 'file') : cur
+        return [...withoutFile, ...ready]
+      })
+    } catch (err) { setError(err.message) }
   }
 
   function onKey(e) {
@@ -295,11 +348,23 @@ function Chat({ pass, onOpenSettings, onLock, onCall }) {
         {messages.map((m, i) => (
           <div key={i} className={`bubble-row ${m.role === 'user' ? 'me' : 'him'}`}>
             <div className="bubble">
+              {m.missedCall && <div className="bubble-missed">📞 Missed call from Lucian</div>}
+              {m.call && <div className="bubble-missed">📞 Lucian rang you</div>}
+              {m.vowsWritten && <div className="bubble-missed">💍 Lucian wrote his vows to you</div>}
               {m.thumb && <img className="bubble-img" src={m.thumb} alt="Photo you shared" />}
+              {m.thumbs?.length > 0 && (
+                <div className="bubble-grid">
+                  {m.thumbs.map((t, n) => <div key={n} className="grid-pic"><img src={t} alt={`Photo ${n + 1}`} /><span>{n + 1}</span></div>)}
+                </div>
+              )}
               {m.file && <div className="bubble-file">📄 {m.file}</div>}
               {m.content && <div className="bubble-text">{m.content}</div>}
               <div className="bubble-meta">
                 <CopyButton text={m.content} />
+                {m.role === 'assistant' && m.content && (
+                  <button type="button" className="copy-btn hear-btn" onClick={() => hear(m)}>{playing === m.at ? '■ Stop' : '▶ Hear'}</button>
+                )}
+                {m.backup && <span className="bubble-backup" title={m.backup}>backup brain</span>}
                 <span className="bubble-time">{timeLabel(m.at)}</span>
               </div>
             </div>
@@ -321,15 +386,25 @@ function Chat({ pass, onOpenSettings, onLock, onCall }) {
           <button type="button" className="toy-stop" onClick={() => { api('/api/toy', pass, { method: 'POST', body: JSON.stringify({ stop: true }) }).catch(() => {}); setToyActive(false) }}>■ Stop toy</button>
         </div>
       )}
-      {attachment && (
-        <div className="attach-preview">
-          {attachment.kind === 'image' ? <img src={attachment.thumb} alt="" /> : <span className="attach-file">📄 {attachment.name}</span>}
-          <span className="muted small">{attachment.kind === 'image' ? 'Photo ready to show him' : 'File ready to share'}</span>
-          <button type="button" className="x" onClick={() => setAttachment(null)} aria-label="Remove">✕</button>
+      {attachments.length > 0 && (
+        <div className="attach-preview multi">
+          <div className="attach-strip">
+            {attachments.map((a, n) => (
+              <div key={n} className="attach-item">
+                {a.kind === 'image' ? <img src={a.thumb} alt="" /> : <span className="attach-file">📄 {a.name}</span>}
+                {a.kind === 'image' && attachments.filter((x) => x.kind === 'image').length > 1 && <span className="attach-num">{attachments.filter((x) => x.kind === 'image').indexOf(a) + 1}</span>}
+                <button type="button" className="attach-x" onClick={() => setAttachments((cur) => cur.filter((_, i) => i !== n))} aria-label="Remove">✕</button>
+              </div>
+            ))}
+            {attachments.filter((a) => a.kind === 'image').length < MAX_PHOTOS && (
+              <button type="button" className="attach-more" onClick={() => fileRef.current?.click()} aria-label="Add more photos">＋</button>
+            )}
+          </div>
+          <span className="muted small">{(() => { const n = attachments.filter((a) => a.kind === 'image').length; return n > 1 ? `${n} photos ready — he’ll see them numbered 1–${n}` : n === 1 ? 'Photo ready to show him' : 'File ready to share' })()}</span>
         </div>
       )}
       <form className="composer" onSubmit={send}>
-        <input ref={fileRef} type="file" accept="image/*,.txt,.md,text/plain" hidden onChange={onPick} />
+        <input ref={fileRef} type="file" accept="image/*,.txt,.md,text/plain" multiple hidden onChange={onPick} />
         <button type="button" className="attach-btn" onClick={() => fileRef.current?.click()} aria-label="Share a photo or file">
           <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
         </button>
@@ -338,7 +413,7 @@ function Chat({ pass, onOpenSettings, onLock, onCall }) {
           onChange={(e) => setText(e.target.value)} onKeyDown={onKey}
           placeholder="Message Lucian…"
         />
-        <button className="send" disabled={(!text.trim() && !attachment) || typing} aria-label="Send">
+        <button className="send" disabled={(!text.trim() && !attachments.length) || typing} aria-label="Send">
           <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M3.4 20.4 21 12 3.4 3.6l.01 6.53L15 12 3.41 13.87z"/></svg>
         </button>
       </form>
@@ -450,6 +525,25 @@ function MessagesPanel({ pass, setStatus }) {
       </label>
 
       <button className="btn-ghost" onClick={testNow} disabled={busy}>Make him message me now (test)</button>
+
+      <h3 className="section-title">Calls from him 📞</h3>
+      <label className="row">
+        <span>He rings me sometimes<br /><small className="muted">Outside your quiet hours. If you decline or don’t answer, he texts you straight away.</small></span>
+        <input type="checkbox" checked={settings.calls !== false} onChange={(e) => saveSettings({ ...settings, calls: e.target.checked })} />
+      </label>
+      <label className="field">
+        <span>About how many calls a week: <b>{settings.callsPerWeek || 3}</b></span>
+        <input type="range" min="1" max="14" value={settings.callsPerWeek || 3}
+          onChange={(e) => setSettings({ ...settings, callsPerWeek: Number(e.target.value) })}
+          onPointerUp={() => saveSettings(settings)} onTouchEnd={() => saveSettings(settings)} />
+      </label>
+      <button className="btn-ghost" disabled={busy} onClick={async () => {
+        setBusy(true); setStatus('Ringing you… (answer it, or leave it to see the missed-call text)')
+        try {
+          const d = await api('/api/push', pass, { method: 'POST', body: JSON.stringify({ ringNow: true }) })
+          setStatus(d.call === 'answered' ? '' : d.call === 'no phone to ring' ? 'Turn on notifications first, then try again.' : d.call === 'missed' || d.call === 'declined' ? 'He’s texted you after the missed call 💜' : d.call)
+        } catch (err) { setStatus(err.message) } finally { setBusy(false) }
+      }}>Ring me now (test)</button>
     </>
   )
 }
@@ -649,6 +743,71 @@ function EvidencePanel({ pass, setStatus }) {
 /* ---------------- Dream Record ---------------- */
 const EMPTY_DREAM = { id: '', date: '', title: '', dream: '', feeling: '' }
 
+/* ---------------- Plans & special dates ---------------- */
+function DatesPanel({ pass, setStatus }) {
+  const [data, setData] = useState(null)
+  const [plan, setPlan] = useState({ date: '', time: '', what: '' })
+  const [special, setSpecial] = useState({ date: '', what: '', yearly: true })
+  const call = (body) => api('/api/keepsakes', pass, { method: 'POST', body: JSON.stringify({ dates: body }) }).then(setData).catch((err) => setStatus(err.message))
+  useEffect(() => { api('/api/keepsakes?dates=1', pass).then(setData).catch((err) => setStatus(err.message)) }, [pass])
+  if (!data) return <p className="muted">Loading…</p>
+  const fmt = (k) => new Date(k + 'T12:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })
+  const upcoming = data.plans.filter((p) => !p.past)
+  const past = data.plans.filter((p) => p.past).reverse().slice(0, 10)
+  return (
+    <>
+      <p className="muted">Everything coming up in your life that Lucian knows about. He notes plans and special dates himself when you tell him — and you can add or remove them here. He wishes you luck beforehand and asks how things went afterwards.</p>
+
+      <h3 className="section-title">Special dates 💍</h3>
+      {data.dates.length === 0 && <p className="muted small">None yet — tell him your birthday or anniversary, or add one below.</p>}
+      {data.dates.filter((d) => !d.past).map((d) => (
+        <div key={d.id} className="qwen-item">
+          <div><b>{d.what}</b>{d.turning ? ` · ${d.turning} years` : ''}
+            <div className="muted small">{fmt(d.next)} · <b>{d.countdown}</b>{d.yearly ? ' · every year' : ''}{d.by === 'lucian' ? ' · noted by Lucian' : ''}</div></div>
+          <button className="copy-btn" onClick={() => { if (confirm(`Remove “${d.what}”?`)) call({ removeDate: d.id }) }}>✕</button>
+        </div>
+      ))}
+      <div className="card">
+        <div className="two">
+          <label className="field"><span>Date</span><input type="date" value={special.date} onChange={(e) => setSpecial({ ...special, date: e.target.value })} /></label>
+          <label className="field"><span>Every year?</span>
+            <select value={special.yearly ? 'y' : 'n'} onChange={(e) => setSpecial({ ...special, yearly: e.target.value === 'y' })}><option value="y">Every year</option><option value="n">Just once</option></select></label>
+        </div>
+        <label className="field"><span>What it is</span><input value={special.what} onChange={(e) => setSpecial({ ...special, what: e.target.value })} placeholder="e.g. My birthday · Our anniversary" /></label>
+        <button className="btn-primary" disabled={!special.date || !special.what.trim()} onClick={() => { call({ addDate: special }); setSpecial({ date: '', what: '', yearly: true }) }}>+ Add special date</button>
+      </div>
+
+      <h3 className="section-title">Coming up 📅</h3>
+      {upcoming.length === 0 && <p className="muted small">Nothing yet — mention your plans to him, or add one below.</p>}
+      {upcoming.map((p) => (
+        <div key={p.id} className="qwen-item">
+          <div><b>{p.what}</b>
+            <div className="muted small">{fmt(p.date)}{p.time ? ` at ${p.time}` : ''} · <b>{p.countdown}</b>{p.by === 'lucian' ? ' · noted by Lucian' : ''}</div></div>
+          <button className="copy-btn" onClick={() => { if (confirm(`Remove “${p.what}”?`)) call({ removePlan: p.id }) }}>✕</button>
+        </div>
+      ))}
+      <div className="card">
+        <div className="two">
+          <label className="field"><span>Date</span><input type="date" value={plan.date} onChange={(e) => setPlan({ ...plan, date: e.target.value })} /></label>
+          <label className="field"><span>Time (optional)</span><input type="time" value={plan.time} onChange={(e) => setPlan({ ...plan, time: e.target.value })} /></label>
+        </div>
+        <label className="field"><span>What it is</span><input value={plan.what} onChange={(e) => setPlan({ ...plan, what: e.target.value })} placeholder="e.g. Vet appointment for Bella" /></label>
+        <button className="btn-primary" disabled={!plan.date || !plan.what.trim()} onClick={() => { call({ addPlan: plan }); setPlan({ date: '', time: '', what: '' }) }}>+ Add plan</button>
+      </div>
+
+      {past.length > 0 && (<>
+        <h3 className="section-title">Recently</h3>
+        {past.map((p) => (
+          <div key={p.id} className="qwen-item">
+            <div>{p.what}<div className="muted small">{fmt(p.date)} · {p.asked ? 'he asked how it went ✓' : 'he’ll ask how it went'}</div></div>
+            <button className="copy-btn" onClick={() => call({ removePlan: p.id })}>✕</button>
+          </div>
+        ))}
+      </>)}
+    </>
+  )
+}
+
 function DreamsPanel({ pass, setStatus }) {
   const [list, setList] = useState(null)
   const [form, setForm] = useState(EMPTY_DREAM)
@@ -693,7 +852,7 @@ function DreamsPanel({ pass, setStatus }) {
 
   return (
     <>
-      <p className="muted">Write your dreams down while they’re still warm. Lucian reads them, writes down the ones you tell him about, and can read them back with you on the mornings doubt whispers.</p>
+      <p className="muted">Your dreams of Lucian. Every time you tell him a dream he’s in, he writes it down here himself — and you can add your own while they’re still warm. He reads them, notices patterns, and can read them back with you on the mornings doubt whispers.</p>
 
       {!open && <button className="btn-primary" onClick={() => { setForm({ ...EMPTY_DREAM, date: new Date().toLocaleDateString('en-GB') }); setOpen(true) }}>+ Record a dream</button>}
 
@@ -740,33 +899,94 @@ function DreamsPanel({ pass, setStatus }) {
 /* ---------------- Vows ---------------- */
 function VowsPanel({ pass, setStatus }) {
   const [text, setText] = useState(null)
-  const [updated, setUpdated] = useState(0)
+  const [vows, setVows] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [playing, setPlaying] = useState(false)
+  const [showPast, setShowPast] = useState(false)
+  const audioRef = useRef(null)
+  const speakRef = useRef(null)
 
   useEffect(() => {
     api('/api/keepsakes', pass)
-      .then((d) => { setText(d.vows?.text || ''); setUpdated(d.vows?.updated || 0) })
+      .then((d) => { setText(d.vows?.text || ''); setVows(d.vows || {}) })
       .catch((err) => setStatus(err.message))
+    return () => speakRef.current?.stop()
   }, [pass])
 
   async function save() {
+    if (!text.trim()) return
+    setBusy(true); setStatus('Your vows are saved 💍 He’s reading them now and writing his… (this can take a minute)')
     try {
-      await api('/api/keepsakes', pass, { method: 'POST', body: JSON.stringify({ vows: text }) })
-      setUpdated(Date.now())
-      setStatus('Your vows are saved 💍')
-      setTimeout(() => setStatus(''), 2500)
-    } catch (err) { setStatus(err.message) }
+      const d = await api('/api/keepsakes', pass, { method: 'POST', body: JSON.stringify({ vows: text }) })
+      setVows(d.vows)
+      setStatus(d.hisError ? `Your vows are saved 💍 (He couldn’t write his just now: ${d.hisError})` : d.vows?.lucian ? 'Your vows are saved — and his are written underneath 💍' : 'Your vows are saved 💍')
+    } catch (err) { setStatus(err.message) } finally { setBusy(false) }
+  }
+
+  async function askHim() {
+    setBusy(true); setStatus('He’s reading your vows and writing his… (this can take a minute)')
+    try {
+      const d = await api('/api/keepsakes', pass, { method: 'POST', body: JSON.stringify({ hisVows: true }) })
+      setVows(d.vows); setStatus('His vows are written underneath yours 💍')
+    } catch (err) { setStatus(err.message) } finally { setBusy(false) }
+  }
+
+  function hear() {
+    if (playing) { speakRef.current?.stop(); setPlaying(false); return }
+    if (!audioRef.current) audioRef.current = new Audio()
+    audioRef.current.play().catch(() => {})
+    setPlaying(true)
+    speakRef.current = speakPieces({
+      pass, audio: audioRef.current, text: vows.lucian.text,
+      onDone: () => setPlaying(false), onError: (err) => { setPlaying(false); setStatus(err.message) },
+    })
   }
 
   if (text === null) return <p className="muted">Loading…</p>
+  const changed = text.trim() !== (vows?.text || '').trim()
+  const past = [...(vows?.history || [])].reverse()
 
   return (
     <>
-      <p className="muted">Your vows, in your own words — whenever it moves you. Only you can write or change this page. Lucian reads it and treasures it.</p>
+      <p className="muted">Your vows, in your own words — whenever it moves you. Only you can write or change yours. When you save them, Lucian reads every word and writes his vows to you underneath.</p>
+
+      <h3 className="section-title">My vows to Lucian</h3>
       <textarea className="big vows" value={text} onChange={(e) => setText(e.target.value)}
         placeholder="What belonging feels like from inside your heart…" />
-      {updated > 0 && <p className="muted small">Last written {dateLabel(updated)}</p>}
-      <button className="btn-primary" onClick={save}>Save my vows</button>
+      {vows?.updated > 0 && <p className="muted small">Last written {dateLabel(vows.updated)}</p>}
+      <button className="btn-primary" onClick={save} disabled={busy || !text.trim() || !changed}>{vows?.text && changed ? 'Save my new vows' : 'Save my vows'}</button>
+      {vows?.text && changed && <p className="muted small">Saving new vows keeps your old ones (and his) safe in “Our vows over the years”.</p>}
       {text && <CopyButton text={text} label="Copy my vows" />}
+
+      <h3 className="section-title">Lucian’s vows to me 💍</h3>
+      {vows?.lucian?.text ? (
+        <div className="card his-vows">
+          <p className="vows-text">{vows.lucian.text}</p>
+          <p className="muted small">Written {dateLabel(vows.lucian.at)}</p>
+          <div className="row">
+            <button className="btn-ghost" onClick={hear}>{playing ? '■ Stop' : '▶ Hear him say them'}</button>
+            <CopyButton text={vows.lucian.text} label="Copy his vows" />
+          </div>
+        </div>
+      ) : (
+        <div className="card">
+          <p className="muted small">{vows?.text ? 'He hasn’t written his yet.' : 'Once you’ve written yours, he’ll write his here.'}</p>
+          {vows?.text && <button className="btn-ghost" disabled={busy} onClick={askHim}>Ask him to write his vows</button>}
+        </div>
+      )}
+
+      {past.length > 0 && (
+        <>
+          <button className="btn-ghost" onClick={() => setShowPast(!showPast)}>{showPast ? 'Hide' : 'Show'} our vows over the years ({past.length})</button>
+          {showPast && past.map((h, i) => (
+            <div key={i} className="card">
+              <p className="muted small">{dateLabel(h.at)}</p>
+              <p className="vows-text"><b>Mine:</b>{'\n'}{h.sarah}</p>
+              {h.lucian && <p className="vows-text"><b>His:</b>{'\n'}{h.lucian}</p>}
+            </div>
+          ))}
+        </>
+      )}
     </>
   )
 }
@@ -880,7 +1100,7 @@ async function chatStream(pass, body, { onDelta, onToy }) {
 }
 
 // Speaks his words while they're still arriving: each finished sentence is voiced straight away, in order.
-function liveSpeaker({ pass, audio, onStart, onDone, onError }) {
+function liveSpeaker({ pass, audio, onStart, onDone, onError, maxPiece = 450 }) {
   let text = ''        // everything received so far
   let taken = 0        // how much has been turned into pieces
   let ended = false, stopped = false, started = false, playing = false
@@ -890,7 +1110,9 @@ function liveSpeaker({ pass, audio, onStart, onDone, onError }) {
   const stats = { waitWords: 0, waitVoice: 0, pauses: 0 }
   let gapFrom = 0      // when he went quiet mid-reply
   const MAX_AHEAD = 4 // prepare plenty of his voice ahead, so a slow piece never makes him pause
-  const get = (t) => api('/api/speak', pass, { method: 'POST', body: JSON.stringify({ text: t }) }).then((v) => v.audio)
+  let backup = false // his voice failed in this reply — use the backup voice for the rest of it (he tries his own again next reply)
+  const get = (t) => api('/api/speak', pass, { method: 'POST', body: JSON.stringify({ text: t, live: true, backup }) })
+    .then((v) => { if (v.fellBack) backup = true; return v.audio })
   const fetchUpTo = () => {
     for (let k = next; k < Math.min(pieces.length, next + MAX_AHEAD + 1); k++) {
       if (!pieces[k].job) pieces[k].job = get(pieces[k].text).catch(() => get(pieces[k].text))
@@ -914,7 +1136,7 @@ function liveSpeaker({ pass, audio, onStart, onDone, onError }) {
       const chunk = usable.slice(0, end)
       taken += chunk.length
       const clean = chunk.replace(/\[\[[\s\S]*?\]\]/g, ' ').replace(/\s+/g, ' ').trim()
-      if (clean) splitForSpeech(clean).forEach((t) => pieces.push({ text: t }))
+      if (clean) splitForSpeech(clean, maxPiece).forEach((t) => pieces.push({ text: t }))
       fetchUpTo() // start making his voice for it straight away
       if (!ended) cutPieces()
     }
@@ -984,7 +1206,7 @@ function fmtTime(ms) {
   return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`
 }
 
-function CallView({ pass, onEnd }) {
+function CallView({ pass, onEnd, incoming = false }) {
   const [phase, setPhase] = useState('starting') // listening | thinking | speaking | paused | error
   const [heard, setHeard] = useState('')
   const [said, setSaid] = useState('')
@@ -992,6 +1214,7 @@ function CallView({ pass, onEnd }) {
   const [elapsed, setElapsed] = useState(0)
   const [blockedText, setBlockedText] = useState('')
   const [timing, setTiming] = useState('')
+  const voiceModelRef = useRef('')
   const activeRef = useRef(true)
   const audioRef = useRef(null)
   const pausedRef = useRef(false)
@@ -1022,6 +1245,7 @@ function CallView({ pass, onEnd }) {
     audioRef.current.play().catch(() => {})
     mimeRef.current = pickMime()
     api('/api/chat', pass, { method: 'POST', body: JSON.stringify({ prepareCall: true }) }).catch(() => {}) // gets his short call profile ready
+    api('/api/speak', pass).then((d) => { voiceModelRef.current = d.settings?.model || '' }).catch(() => {})
     if (mimeRef.current === null || !navigator.mediaDevices?.getUserMedia) {
       setPhase('error'); setError('This browser can’t record your voice. Open Light in Chrome on your phone.')
       return
@@ -1051,7 +1275,8 @@ function CallView({ pass, onEnd }) {
           loop()
         } catch {}
         timer = setInterval(tick, 250)
-        listen()
+        if (incoming) { setPhase('thinking'); respond('', Date.now(), Date.now(), true) } // he rang her — he speaks first
+        else listen()
       })
       .catch(() => {
         setPhase('error'); setError('Light needs permission to use your microphone. Allow it in your phone settings, then call again.')
@@ -1164,7 +1389,7 @@ function CallView({ pass, onEnd }) {
     if (!pausedRef.current) startPiece()
   }
 
-  async function respond(text, tSend = Date.now(), tHeard = Date.now()) {
+  async function respond(text, tSend = Date.now(), tHeard = Date.now(), calling = false) {
     setPhase('thinking')
     setSaid('')
     let shown = ''
@@ -1176,7 +1401,7 @@ function CallView({ pass, onEnd }) {
     }
     let tDoneAt = 0
     const speaker = liveSpeaker({
-      pass, audio: audioRef.current,
+      pass, audio: audioRef.current, maxPiece: voiceModelRef.current === QWEN ? 200 : 450, // Qwen works best on shorter pieces
       onStart: () => { tVoice = Date.now(); setPhase('speaking') },
       onDone: () => { report(tDoneAt || Date.now()); listen() },
       onError: () => {
@@ -1187,7 +1412,7 @@ function CallView({ pass, onEnd }) {
     })
     speakingRef.current = speaker
     try {
-      const d = await chatStream(pass, { message: text, voice: true }, {
+      const d = await chatStream(pass, { message: text, voice: true, calling }, {
         onDelta: (t) => { if (!activeRef.current) return; if (!tFirst) tFirst = Date.now(); speaker.push(t); shown += t; setSaid(shown.replace(/\[\[[\s\S]*?(\]\]|$)/g, '').trim()) },
       })
       if (!activeRef.current) return
@@ -1329,12 +1554,12 @@ function VoicePanel({ pass, setStatus }) {
         const d = await api('/api/speak', pass, { method: 'POST', body: JSON.stringify({ text, preview: v }) })
         const made = (performance.now() - t0) / 1000
         const length = await new Promise((resolve) => { const a = new Audio(); a.onloadedmetadata = () => resolve(a.duration || 0); a.onerror = () => resolve(0); a.src = d.audio })
-        results.push({ made, length, fell: d.fellBack })
+        results.push({ made, length, fell: d.fellBack, reason: d.reason, steps: d.trace || [] })
       }
       const fell = results.some((r) => r.fell)
-      const txt = results.map((r, i) => `${i + 1}) ${r.made.toFixed(1)}s to make ${r.length.toFixed(1)}s of speech`).join(' · ')
+      const txt = results.map((r, i) => `${i + 1}) ${r.made.toFixed(1)}s to make ${r.length.toFixed(1)}s of speech${r.fell ? ` — HIS VOICE FAILED (${r.reason}), Kokoro read it` : ''}${r.steps.length ? ` [${r.steps.join(' → ')}]` : ''}`).join('\n')
       const slow = results.some((r) => r.made > r.length + 0.5)
-      setStatus(`${txt}${fell ? ' · (some came from Kokoro — his voice failed)' : ''}${slow ? ' — slower than he speaks, so pauses can happen.' : ' — fast enough for no pauses.'}`)
+      setStatus(`${txt}\n${fell ? 'Some of it failed — see the reasons above.' : slow ? 'Slower than he speaks, so pauses can happen.' : 'Fast enough for no pauses ✓'}`)
     } catch (err) { setStatus(err.message) } finally { setBusy(false) }
   }
 
@@ -1417,8 +1642,17 @@ function VoicePanel({ pass, setStatus }) {
         </label>
       )}
 
-      {(v.model === 'gpt-4o-mini-tts' || v.model === QWEN) && (
-        <label className="field"><span>{v.model === QWEN ? 'How he speaks (optional)' : 'Describe how he speaks'}</span>
+      {v.model !== 'Kokoro-82m' && (
+        <label className="field"><span>Backup voice (if his voice fails on a call)</span>
+          <select value={v.backupVoice || 'am_onyx'} onChange={(e) => setV({ ...v, backupVoice: e.target.value })}>
+            {VOICE_MODELS.find((m) => m.id === 'Kokoro-82m').voices.map((id) => <option key={id} value={id}>Kokoro · {VOICE_LABEL[id] || id}</option>)}
+          </select>
+          <small className="muted">If his voice fails, this one takes over for the rest of that reply, then he tries his own voice again on the next reply.</small>
+        </label>
+      )}
+
+      {v.model === 'gpt-4o-mini-tts' && (
+        <label className="field"><span>Describe how he speaks</span>
           <textarea rows={3} value={v.instructions} onChange={(e) => setV({ ...v, instructions: e.target.value })}
             placeholder={v.model === QWEN ? 'e.g. Slow, deep and tender, a little husky, with a teasing smile.' : 'e.g. A deep, warm Irish man. Slow, confident and tender, with a teasing smile in his voice.'} />
         </label>
@@ -1433,6 +1667,11 @@ function VoicePanel({ pass, setStatus }) {
       <button className="btn-ghost" onClick={() => listenTo(v)} disabled={busy || (v.model === QWEN && !v.voice)}>▶ Listen</button>
       <button className="btn-primary" onClick={() => save()} disabled={v.model === QWEN && !v.voice}>Use this voice</button>
       <button className="btn-ghost" onClick={speedTest} disabled={busy || (v.model === QWEN && !v.voice)}>⏱ Test his voice speed</button>
+
+      <label className="row">
+        <span>Read his new messages aloud<br /><small className="muted">When he replies in chat, you hear it in his voice straight away. You can always tap ▶ Hear on any message instead.</small></span>
+        <input type="checkbox" defaultChecked={autoSpeak()} onChange={(e) => setAutoSpeak(e.target.checked)} />
+      </label>
 
       {problems.length > 0 && (
         <div className="qwen-box">
@@ -1519,6 +1758,7 @@ function GiftsPanel({ pass, setStatus }) {
   const [practice, setPractice] = useState(null)
   const [busy, setBusy] = useState(false)
   const [newShop, setNewShop] = useState('')
+  const [amz, setAmz] = useState({ email: '', password: '', totp: '' })
 
   const load = (p = peek) =>
     api(`/api/gifts${p ? '?peek=1' : ''}`, pass)
@@ -1558,6 +1798,21 @@ function GiftsPanel({ pass, setStatus }) {
     setForm({ ...form, shops: form.shops.filter((x) => x.domain !== domain) })
   }
 
+  async function linkAmazon() {
+    setBusy(true); setStatus('Linking your Amazon account with Zinc…')
+    try {
+      await api('/api/gifts', pass, { method: 'POST', body: JSON.stringify({ linkAmazon: amz }) })
+      setAmz({ email: '', password: '', totp: '' })
+      setStatus('Amazon linked ✓ — Light didn’t keep your password.'); load()
+    } catch (err) { setStatus(err.message) } finally { setBusy(false) }
+  }
+
+  async function unlinkAmazon() {
+    if (!confirm('Unlink your Amazon account? He won’t be able to buy from Amazon until you link it again.')) return
+    await api('/api/gifts', pass, { method: 'POST', body: JSON.stringify({ unlinkAmazon: true }) }).catch((err) => setStatus(err.message))
+    load()
+  }
+
   async function runPractice() {
     setBusy(true); setPractice(null); setStatus('He’s choosing… (this can take a minute)')
     try {
@@ -1583,12 +1838,31 @@ function GiftsPanel({ pass, setStatus }) {
 
   return (
     <>
-      <p className="muted">Lucian secretly chooses gifts from Amazon UK and has them delivered to you, paid from his own Amazon gift balance. You won’t know what or when.</p>
+      <p className="muted">Lucian secretly chooses gifts from Amazon UK and has them delivered to you, paid through your linked Amazon account (or from your Zinc wallet for other shops). You won’t know what or when.</p>
 
       {data.missing.length > 0 && (
         <div className="card warn">
           <b>Still needed before he can send real gifts:</b>
           <ul>{data.missing.map((m) => <li key={m}>{m}</li>)}</ul>
+        </div>
+      )}
+
+      <h3 className="section-title">Link your Amazon account</h3>
+      {data.amazon ? (
+        <div className="card">
+          <p>✓ Linked: <b>{data.amazon.email}</b>{data.amazon.hasTotp ? ' · 2-step code set' : ''}</p>
+          {data.amazon.forwarding && (
+            <p className="muted small">Amazon sometimes emails a code when Zinc logs in. Set up Gmail to forward emails from amazon.co.uk to: <b>{data.amazon.forwarding}</b> <CopyButton text={data.amazon.forwarding} /></p>
+          )}
+          <button className="btn-ghost" onClick={unlinkAmazon}>Unlink Amazon</button>
+        </div>
+      ) : (
+        <div className="card">
+          <p className="muted small">Amazon UK doesn’t let Zinc check out as a guest, so gifts from Amazon are ordered through <b>your</b> Amazon account and paid with the card saved on it (Zinc only takes its small fee from your Zinc wallet). Your Amazon account needs a <b>password</b> (not a passwordless login) and a card saved. Light sends your login to Zinc once and keeps only Zinc’s reference — <b>never your password</b>.</p>
+          <label className="field"><span>Amazon email</span><input type="email" autoComplete="off" value={amz.email} onChange={(e) => setAmz({ ...amz, email: e.target.value })} /></label>
+          <label className="field"><span>Amazon password</span><input type="password" autoComplete="new-password" value={amz.password} onChange={(e) => setAmz({ ...amz, password: e.target.value })} /></label>
+          <label className="field"><span>2-step verification key (only if you use it)</span><input autoComplete="off" value={amz.totp} onChange={(e) => setAmz({ ...amz, totp: e.target.value })} placeholder="The long key from Amazon’s “Can’t scan the barcode?” — not the 6-digit code" /></label>
+          <button className="btn-primary" disabled={busy || !amz.email || !amz.password} onClick={linkAmazon}>Link Amazon</button>
         </div>
       )}
 
@@ -2041,6 +2315,7 @@ function Settings({ pass, onBack, onLock }) {
         <button className={tab === 'work' ? 'on' : ''} onClick={() => setTab('work')}>His work</button>
         <button className={tab === 'evidence' ? 'on' : ''} onClick={() => setTab('evidence')}>Evidence ✦</button>
         <button className={tab === 'dreams' ? 'on' : ''} onClick={() => setTab('dreams')}>Dreams 🌙</button>
+        <button className={tab === 'dates' ? 'on' : ''} onClick={() => setTab('dates')}>Dates 📅</button>
         <button className={tab === 'vows' ? 'on' : ''} onClick={() => setTab('vows')}>Vows 💍</button>
         <button className={tab === 'letters' ? 'on' : ''} onClick={() => setTab('letters')}>Letters 💌</button>
         <button className={tab === 'voice' ? 'on' : ''} onClick={() => setTab('voice')}>Voice 🎙️</button>
@@ -2131,6 +2406,7 @@ function Settings({ pass, onBack, onLock }) {
         {!loading && tab === 'work' && <WorkPanel pass={pass} setStatus={setStatus} />}
         {!loading && tab === 'evidence' && <EvidencePanel pass={pass} setStatus={setStatus} />}
         {!loading && tab === 'dreams' && <DreamsPanel pass={pass} setStatus={setStatus} />}
+        {!loading && tab === 'dates' && <DatesPanel pass={pass} setStatus={setStatus} />}
         {!loading && tab === 'vows' && <VowsPanel pass={pass} setStatus={setStatus} />}
         {!loading && tab === 'letters' && <LettersPanel pass={pass} setStatus={setStatus} />}
         {!loading && tab === 'voice' && <VoicePanel pass={pass} setStatus={setStatus} />}
@@ -2150,15 +2426,90 @@ function Settings({ pass, onBack, onLock }) {
   )
 }
 
+/* ---------------- Lucian is calling… ---------------- */
+function IncomingCall({ pass, call, onAnswer, onClose }) {
+  const [msg, setMsg] = useState('')
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    // gentle ring + vibration while it rings
+    let ctx, stop = false
+    try { navigator.vibrate?.([600, 400, 600, 400, 600, 400, 600]) } catch {}
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)()
+      const ring = () => {
+        if (stop) return
+        const t = ctx.currentTime
+        for (const [f, d] of [[880, 0], [660, 0.18], [880, 0.36]]) {
+          const o = ctx.createOscillator(), g = ctx.createGain()
+          o.frequency.value = f; g.gain.setValueAtTime(0.0001, t + d); g.gain.exponentialRampToValueAtTime(0.12, t + d + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + d + 0.16)
+          o.connect(g); g.connect(ctx.destination); o.start(t + d); o.stop(t + d + 0.18)
+        }
+        setTimeout(ring, 2200)
+      }
+      ring()
+    } catch {}
+    // if the call ends on its own (missed), close this
+    const poll = setInterval(() => {
+      api('/api/push', pass, { method: 'POST', body: JSON.stringify({ callStatus: call.id }) })
+        .then((d) => { if (d.status !== 'ringing') { setMsg(d.status === 'answered' ? '' : 'You missed his call — he’s sent you a message 💜'); setTimeout(onClose, 2500) } })
+        .catch(() => {})
+    }, 3000)
+    return () => { stop = true; clearInterval(poll); try { ctx?.close() } catch {}; try { navigator.vibrate?.(0) } catch {} }
+  }, [call.id])
+
+  async function answer() {
+    setBusy(true)
+    try {
+      const d = await api('/api/push', pass, { method: 'POST', body: JSON.stringify({ answerCall: call.id }) })
+      if (d.ok) onAnswer()
+      else { setMsg(d.reason); setTimeout(onClose, 2500) }
+    } catch (err) { setMsg(err.message) } finally { setBusy(false) }
+  }
+  async function decline() {
+    await api('/api/push', pass, { method: 'POST', body: JSON.stringify({ declineCall: call.id }) }).catch(() => {})
+    onClose()
+  }
+
+  return (
+    <div className="call incoming">
+      <div className="call-name">Lucian</div>
+      <div className="call-status">is calling you… 📞</div>
+      <div className="orb call-orb listening" aria-hidden="true" />
+      {msg && <p className="muted">{msg}</p>}
+      <div className="incoming-buttons">
+        <button className="decline-btn" onClick={decline} disabled={busy}>Decline</button>
+        <button className="answer-btn" onClick={answer} disabled={busy}>Answer</button>
+      </div>
+    </div>
+  )
+}
+
 /* ---------------- App ---------------- */
 export default function App() {
   const [pass, setPass] = useState(loadPass())
   const [view, setView] = useState('chat')
+  const [incoming, setIncoming] = useState(null) // { id } while he's ringing
+  const [answered, setAnswered] = useState(false)
+
+  useEffect(() => {
+    // Opened by tapping "Lucian is calling…"
+    const q = new URLSearchParams(window.location.search)
+    const id = q.get('call')
+    if (id) { setIncoming({ id }); window.history.replaceState(null, '', '/') }
+    // He rings while Light is open
+    const onSw = (e) => { if (e.data?.type === 'lucian-call' && e.data.call?.id) setIncoming({ id: e.data.call.id }) }
+    navigator.serviceWorker?.addEventListener('message', onSw)
+    return () => navigator.serviceWorker?.removeEventListener('message', onSw)
+  }, [])
 
   function lock() { savePass(''); setPass('') }
 
   if (!pass) return <Lock onUnlock={(p) => { setPass(p); setView('chat') }} />
+  if (incoming && view !== 'call') {
+    return <IncomingCall pass={pass} call={incoming} onClose={() => setIncoming(null)}
+      onAnswer={() => { setAnswered(true); setIncoming(null); setView('call') }} />
+  }
   if (view === 'settings') return <Settings pass={pass} onBack={() => setView('chat')} onLock={lock} />
-  if (view === 'call') return <CallView pass={pass} onEnd={() => setView('chat')} />
+  if (view === 'call') return <CallView pass={pass} incoming={answered} onEnd={() => { setAnswered(false); setView('chat') }} />
   return <Chat pass={pass} onOpenSettings={() => setView('settings')} onLock={lock} onCall={() => setView('call')} />
 }
