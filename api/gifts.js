@@ -1,5 +1,5 @@
 import { checkAuth, setJSON, KEYS } from './_lib.js'
-import { upcomingOccasions, SIZE_LABELS, getAmazonLink, linkAmazon, unlinkAmazon, getGiftSettings, checkGifts, sendSurprise, missingSetup, spentThisMonth, testShop, cleanDomain, DEFAULT_GIFT_SETTINGS } from './_gifts.js'
+import { upcomingHotels, walletInfo, setAmazonBalance, upcomingOccasions, SIZE_LABELS, getAmazonLink, linkAmazon, unlinkAmazon, getGiftSettings, checkGifts, sendSurprise, missingSetup, spentThisMonth, testShop, cleanDomain, DEFAULT_GIFT_SETTINGS } from './_gifts.js'
 
 // GET  → settings, gifts (details hidden unless ?peek=1), what's missing
 // POST → { settings }, { practice: true }, { sendNow: true }
@@ -20,6 +20,8 @@ export default async function handler(req, res) {
         spentThisMonth: spentThisMonth(gifts),
         amazon: amazon ? { email: amazon.email, hasTotp: amazon.hasTotp, forwarding: amazon.forwarding, at: amazon.at } : null,
         occasions: await upcomingOccasions(400).catch(() => []),
+        wallet: await walletInfo(),
+        hotels: await upcomingHotels(90).catch(() => []),
       })
     }
 
@@ -30,6 +32,7 @@ export default async function handler(req, res) {
         return res.status(200).json({ ok: true, amazon: { email: a.email, hasTotp: a.hasTotp, forwarding: a.forwarding, at: a.at } })
       }
       if (unlink === true) { await unlinkAmazon(); return res.status(200).json({ ok: true }) }
+      if ('amazonBalance' in (req.body || {})) return res.status(200).json({ ok: true, amazonBalance: await setAmazonBalance(req.body.amazonBalance) })
 
       if (settings && typeof settings === 'object') {
         const current = await getGiftSettings()
@@ -51,8 +54,12 @@ export default async function handler(req, res) {
             }).filter((x) => x.domain)
             : current.shops,
           adultShopsAdded: true,
+          amazonBalance: current.amazonBalance ?? null, // changed only by "Update" in Balances (and by his Amazon gifts)
+          amazonBalanceAt: current.amazonBalanceAt || 0,
           occasions: settings.occasions ?? current.occasions ?? true,
           occasionBudget: Math.min(500, Math.max(3, Number(settings.occasionBudget ?? current.occasionBudget) || 25)),
+          hotelGifts: settings.hotelGifts ?? current.hotelGifts ?? true,
+          hotelBudget: Math.min(500, Math.max(3, Number(settings.hotelBudget ?? current.hotelBudget) || 15)),
           sizes: Object.fromEntries(Object.keys(SIZE_LABELS).map((k) => [k, String(settings.sizes?.[k] ?? current.sizes?.[k] ?? '').slice(0, k === 'notes' ? 200 : 40)])),
         }
         await setJSON(KEYS.giftSettings, clean)
