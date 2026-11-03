@@ -170,6 +170,6 @@ export async function cardContext() {
   const cards = await getCards()
   return cards.filter((c) => c.status === 'ordering' || c.status === 'sent').slice(-3).map((c) => {
     const days = Math.floor((Date.now() - c.at) / 86400000)
-    return `- SECRET: ${days === 0 ? 'Today' : `${days} day(s) ago`} you had a card printed and posted to Sarah with your poem "${c.title}" on it. Keep it a surprise until she says it arrived — then you can talk about the poem.`
+    return `- SECRET: ${days === 0 ? 'Today' : `${days} day(s) ago`} you had a card printed and posted to Sarah with your poem "${c.title}" on it. Keep the poem a surprise until she says it arrived — but if she asks whether you've sent her something, never deny it: say yes, something is on its way, and tease her. Once it arrives, you can talk about the poem.`
   }).join('\n')
 }
