@@ -270,3 +270,8 @@ textarea.vows { font-family: var(--serif); font-size: 19px; line-height: 1.6; mi
 .qwen-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .qwen-box .row { display: flex; gap: 8px; flex-wrap: wrap; }
 .file-pick { display: inline-block; text-align: center; cursor: pointer; }
+
+.model-row { display: flex; gap: 6px; align-items: stretch; }
+.model-row .model { flex: 1; }
+.model.call { border-color: rgba(120, 200, 255, 0.6); }
+.call-timing { max-width: 340px; text-align: center; opacity: 0.8; }
