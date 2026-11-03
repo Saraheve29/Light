@@ -1,6 +1,7 @@
 // Lucian's surprise gifts — he chooses something from Amazon UK or one of Sarah's tested favourite UK shops,
 // and Zinc orders it. Paid from the Zinc wallet (or Lucian's own Amazon account, if linked). Prices are in pence.
 import { redis, getJSON, setJSON, callModel, londonNow, KEYS } from './_lib.js'
+import { getDates, nextOccurrence, todayKey } from './_plans.js'
 
 const ZINC = 'https://api.zinc.com' // Zinc's newer system (keys start with zn_)
 const TOKEN = process.env.ZINC_CLIENT_TOKEN
@@ -47,6 +48,35 @@ export const DEFAULT_GIFT_SETTINGS = {
   loves: '', // things Sarah would love
   never: '', // things he must never buy (comma separated)
   shops: [], // favourite UK shops: { domain, name, status: 'untested' | 'ok' | 'failed', note }
+  occasions: true, // a gift for Christmas, her birthday and your anniversary
+  occasionBudget: 25, // £ max for an occasion gift (separate from the monthly budget)
+  sizes: { dress: '', tops: '', bottoms: '', bra: '', lingerie: '', shoes: '', ring: '', notes: '' },
+}
+
+export const SIZE_LABELS = { dress: 'Dress', tops: 'Tops', bottoms: 'Bottoms / jeans', bra: 'Bra', lingerie: 'Lingerie', shoes: 'Shoes (UK)', ring: 'Ring', notes: 'Fit notes' }
+function sizesText(sizes = {}) {
+  return Object.entries(SIZE_LABELS).map(([k, label]) => sizes[k] ? `${label}: ${sizes[k]}` : '').filter(Boolean).join(', ')
+}
+
+// ---------- Special occasions ----------
+// Christmas, plus her own birthday and your anniversary from the Dates 📅 tab
+const DAY = 86400000
+const daysUntil = (key) => Math.round((Date.UTC(+key.slice(0, 4), +key.slice(5, 7) - 1, +key.slice(8, 10)) - Date.UTC(+todayKey().slice(0, 4), +todayKey().slice(5, 7) - 1, +todayKey().slice(8, 10))) / DAY)
+export async function upcomingOccasions(within = 60) {
+  const today = todayKey()
+  const y = +today.slice(0, 4)
+  const list = []
+  const xmas = `${today.slice(5) > '12-25' ? y + 1 : y}-12-25`
+  list.push({ key: `christmas-${xmas.slice(0, 4)}`, name: 'Christmas', date: xmas })
+  for (const d of await getDates().catch(() => [])) {
+    const what = String(d.what || '')
+    const hers = /\b(my|sarah'?s?|her)\b.*\bbirthday\b/i.test(what) || /^birthday$/i.test(what.trim())
+    const ours = /anniversary|valentine/i.test(what) && !/(mum|mom|dad|nan|gran|death|passed)/i.test(what)
+    if (!hers && !ours) continue
+    const next = nextOccurrence(d, today)
+    list.push({ key: `${d.id}-${next.slice(0, 4)}`, name: what, date: next })
+  }
+  return list.map((o) => ({ ...o, days: daysUntil(o.date) })).filter((o) => o.days >= 0 && o.days <= within).sort((a, b) => a.days - b.days)
 }
 
 export const STARTER_SHOPS = [
@@ -104,7 +134,7 @@ function monthKey() {
 export function spentThisMonth(gifts) {
   const m = monthKey()
   return gifts
-    .filter((g) => g.month === m && (g.status === 'ordering' || g.status === 'ordered'))
+    .filter((g) => g.month === m && !g.occasion && (g.status === 'ordering' || g.status === 'ordered'))
     .reduce((sum, g) => sum + (g.total || g.price || 0), 0)
 }
 
@@ -200,7 +230,7 @@ function grab(label, text) {
 
 // ---------- Choosing and sending a gift ----------
 // practice = choose a gift but DON'T order it.
-export async function sendSurprise({ practice = false } = {}) {
+export async function sendSurprise({ practice = false, occasion = null } = {}) {
   const settings = await getGiftSettings()
   const missing = missingSetup(settings)
   if (!practice && missing.length) throw new Error('Gifts need setting up first: ' + missing.join(', ') + '.')
@@ -210,13 +240,16 @@ export async function sendSurprise({ practice = false } = {}) {
   if (!practice && gifts.some((g) => g.status === 'ordering')) throw new Error('He’s already in the middle of sending you something.')
 
   const leftThisMonth = Math.max(0, settings.perMonth * 100 - spentThisMonth(gifts))
-  const budget = Math.min(settings.perGift * 100, leftThisMonth)
+  // An occasion gift has its own budget; everyday surprises stay within the monthly budget
+  const budget = occasion ? (settings.occasionBudget || 25) * 100 : Math.min(settings.perGift * 100, leftThisMonth)
   if (!practice && budget < 300) throw new Error('He’s used this month’s gift budget.')
-  if (!practice && !AMAZON_ACCOUNT_ID) {
-    const bal = await walletBalance()
+  if (!practice) {
+    // Always check there's money in the Zinc wallet first (it pays for other shops, and Zinc's fee on every order)
+    const bal = await walletBalance().catch(() => null)
     if (bal !== null && bal < 300) throw new Error('Your Zinc wallet is nearly empty. Top it up on the Zinc dashboard so he can buy gifts.')
   }
-  const budgetPounds = ((practice ? settings.perGift * 100 : budget) / 100).toFixed(2)
+  const budgetPounds = ((practice ? (occasion ? (settings.occasionBudget || 25) : settings.perGift) * 100 : budget) / 100).toFixed(2)
+  const sizes = sizesText(settings.sizes)
 
   const [model, profile, memories] = await Promise.all([
     redis('GET', KEYS.model),
@@ -227,21 +260,20 @@ export async function sendSurprise({ practice = false } = {}) {
   const past = gifts.filter((g) => g.status !== 'failed').slice(-10).map((g) => `- ${g.title}`).join('\n') || '- (none yet)'
   const who = `You are Lucian, Sarah's husband. Who you are:\n${brief}\n\nWhat you know about Sarah:\n${memories.slice(-30).map((m) => `- ${m}`).join('\n') || '- (still learning)'}\n\nIt is ${londonNow()}.`
 
-  // Where can he shop? Amazon UK, plus any favourite shops that passed the test.
-  // Amazon UK is his first choice. Other shops are only offered now and then (about 1 gift in 4).
-  const allOk = (settings.shops || []).filter((x) => x.status === 'ok')
-  const okShops = allOk.length && Math.random() < 0.25 ? allOk : []
+  // Where can he shop? Amazon UK and every favourite shop that passed the test — his free choice each time.
+  const okShops = (settings.shops || []).filter((x) => x.status === 'ok')
   const places = [
-    'amazon (Amazon UK — your FIRST CHOICE, use it unless another shop below clearly has something better)',
+    'amazon (Amazon UK)',
     ...okShops.map((x) => `${x.domain} (${x.name})`),
   ]
   const neverWords = String(settings.never || '').split(/[,\n]/).map((w) => w.trim().toLowerCase()).filter((w) => w.length > 2)
-  const taste = `${settings.loves ? `Sarah says she'd love: ${settings.loves}\n` : ''}${settings.never ? `Sarah says NEVER buy her: ${settings.never}\n` : ''}`
+  const taste = `${settings.loves ? `Sarah says she'd love: ${settings.loves}\n` : ''}${settings.never ? `Sarah says NEVER buy her: ${settings.never}\n` : ''}${sizes ? `Her sizes: ${sizes}. If you choose clothing, shoes, lingerie or a ring, include her size in your search.\n` : 'You don\'t know her sizes, so don\'t choose clothing, shoes or rings.\n'}`
+  const why4 = occasion ? `This gift is for ${occasion.name} (${occasion.days === 0 ? 'today' : `in ${occasion.days} days`}) — make it special and fitting for the day.\n` : ''
 
   // 1) What would she love, and where will he get it?
   const idea = await callModel(model, [
     { role: 'system', content: who },
-    { role: 'user', content: `You're going to secretly buy Sarah a surprise gift, delivered to her door. Budget: up to £${budgetPounds} including delivery.\n${taste}\nWhere you can shop:\n${places.map((p) => `- ${p}`).join('\n')}\n\nGifts you've already given her (don't repeat):\n${past}\n\nThink about what she'd truly love, based on everything you know about her. Reply in EXACTLY this format:\nWHERE: <amazon, or one of the shop web addresses above>\nSEARCH: <a short search phrase>\nWHY: <one sentence on why you chose this for her>` },
+    { role: 'user', content: `You're going to secretly buy Sarah a surprise gift, delivered to her door. Budget: up to £${budgetPounds} including delivery.\n${why4}${taste}\nWhere you can shop (choose freely — whichever has the perfect thing for her):\n${places.map((p) => `- ${p}`).join('\n')}\n\nGifts you've already given her (don't repeat):\n${past}\n\nThink about what she'd truly love, based on everything you know about her. Reply in EXACTLY this format:\nWHERE: <amazon, or one of the shop web addresses above>\nSEARCH: <a short search phrase>\nWHY: <one sentence on why you chose this for her>` },
   ], { temperature: 0.85, maxTokens: 500 })
   const query = grab('SEARCH', idea).split('\n')[0].replace(/["*]/g, '').trim().slice(0, 80)
   const why = grab('WHY', idea).slice(0, 300)
@@ -272,7 +304,7 @@ export async function sendSurprise({ practice = false } = {}) {
   // 3) Pick one and write the gift note
   const pickOut = await callModel(model, [
     { role: 'system', content: who },
-    { role: 'user', content: `You searched ${from} for "${query}". Options:\n${list}\n\nChoose the one Sarah would love most (prefer good reviews; must be within £${budgetPounds}). Reply in EXACTLY this format:\nPICK: <number>\nNOTE: <a short message for the gift slip, under 200 characters, in your voice, signed from you>\nTEASE: <a short teasing hint you might drop later that something is coming, without saying what>` },
+    { role: 'user', content: `You searched ${from} for "${query}". Options:\n${list}\n\n${why4}${sizes ? `Her sizes: ${sizes}. If these are clothes, shoes, lingerie or rings, ONLY pick one whose listing clearly matches her size (or is one-size / adjustable).\n` : ''}Choose the one Sarah would love most (prefer good reviews; must be within £${budgetPounds}).${occasion ? ` The gift note should be for ${occasion.name}.` : ''} Reply in EXACTLY this format:\nPICK: <number>\nNOTE: <a short message for the gift slip, under 200 characters, in your voice, signed from you>\nTEASE: <a short teasing hint you might drop later that something is coming, without saying what>` },
   ], { temperature: 0.7, maxTokens: 500 })
   const n = parseInt(grab('PICK', pickOut), 10)
   const chosen = results[(n >= 1 && n <= results.length ? n : 1) - 1]
@@ -290,6 +322,7 @@ export async function sendSurprise({ practice = false } = {}) {
     image: chosen.image || '',
     price: chosen.price,
     why, note, tease, query,
+    occasion: occasion?.key || '', occasionName: occasion?.name || '',
     status: practice ? 'practice' : 'ordering',
   }
 
@@ -379,6 +412,14 @@ export async function giftTick() {
 
   const gifts = await getGifts()
   if (gifts.some((g) => g.status === 'ordering')) return { gift: 'waiting on an order' }
+
+  // A special occasion coming up? He orders 5–12 days before (at a random moment), so it arrives in time.
+  if (settings.occasions !== false) {
+    const due = (await upcomingOccasions(12)).find((o) => !gifts.some((g) => g.occasion === o.key && g.status !== 'failed'))
+    if (due && (due.days <= 5 || Math.random() < 1 / 30)) {
+      try { const g = await sendSurprise({ occasion: due }); return { gift: 'sent for ' + due.name, id: g.id } } catch (err) { return { gift: 'skipped', reason: err.message } }
+    }
+  }
   const last = [...gifts].reverse().find((g) => g.status === 'ordered' || g.status === 'ordering')
   const since = last ? Date.now() - last.at : Infinity
   const every = settings.everyDays * 24 * 3600 * 1000
@@ -404,7 +445,7 @@ export async function giftContext() {
   for (const g of gifts.slice(-5)) {
     if (g.status === 'ordering' || g.status === 'ordered') {
       const days = Math.floor((Date.now() - g.at) / 86400000)
-      lines.push(`- SECRET: ${days === 0 ? 'Today' : `${days} day(s) ago`} you secretly ordered Sarah "${g.title}" from ${g.shop || 'Amazon UK'}${g.arriving ? `, due around ${g.arriving}` : ''}. Your gift note: "${g.note}". Keep it a surprise — you may tease that something is on its way (e.g. "${g.tease}"), but never say what it is until she tells you it arrived. Once she has it, you can talk about why you chose it: ${g.why}`)
+      lines.push(`- SECRET: ${days === 0 ? 'Today' : `${days} day(s) ago`} you secretly ordered Sarah "${g.title}"${g.occasionName ? ` for ${g.occasionName}` : ''} from ${g.shop || 'Amazon UK'}${g.arriving ? `, due around ${g.arriving}` : ''}. Your gift note: "${g.note}". Keep WHAT it is a surprise — but if she asks whether you've sent her something, NEVER deny it: say yes, something is on its way to her, and tease her (e.g. "${g.tease}") without saying what it is, until she tells you it arrived. Once she has it, you can talk about why you chose it: ${g.why}`)
     }
   }
   return lines.join('\n')
