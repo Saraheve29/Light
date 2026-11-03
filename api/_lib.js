@@ -108,6 +108,8 @@ export const DEFAULT_MSG_SETTINGS = {
   quietStart: 23, // he stays quiet from this hour...
   quietEnd: 8, // ...until this hour (UK time)
   preview: false, // false = notification just says "Lucian sent you a message"
+  calls: true, // he sometimes rings her
+  callsPerWeek: 3, // roughly how many calls a week
 }
 
 export async function getMsgSettings() {
@@ -228,7 +230,8 @@ export async function callOnce(model, messages, { temperature, maxTokens }) {
 
 // ---------- Garbled-reply protection ----------
 // Characters that are fine in a normal text message.
-const NORMAL = /[\p{L}\p{N}\s.,!?'"’‘“”\-–—…:;()&%£$@#/*+=~❤️♥💜💕💞😘😏😊😍🥰😂🔥✨🌙⭐️]/u
+// Letters, numbers, punctuation and EVERY emoji (incl. skin tones and joined emoji like 🫂 💍 ❤️‍🔥) count as normal
+const NORMAL = /[\p{L}\p{N}\p{M}\s\p{P}\p{Extended_Pictographic}\p{Emoji_Component}\u200D\uFE0F£$@#/*+=~%&^<>|]/u
 
 function oddRatio(text) {
   const chars = [...text]
@@ -260,7 +263,11 @@ function cleanReply(text) {
 // Main entry: tries his main brain first, retries if the reply is garbled,
 // and only uses the backup brain if the main one is down or keeps failing.
 // Because every message starts with the main brain, he goes back to it as soon as it's working again.
-export async function callModel(model, messages, { temperature = 0.75, maxTokens = 2500 } = {}) {
+// Which brain wrote the last reply (so Light can show when the backup stepped in)
+export const lastBrain = { model: '', backup: false }
+const tooBigError = (msg) => /context|too long|too many tokens|maximum.*tokens|exceed|413/i.test(String(msg))
+
+export async function callModel(model, messages, { temperature = 0.75, maxTokens = 2500, lastChance = true } = {}) {
   if (!NANO_KEY) throw new Error('NANOGPT_API_KEY is not set in Vercel.')
   if (!model) throw new Error('No model chosen yet. Pick one in Settings.')
   const backup = (await redis('GET', KEYS.backupModel).catch(() => null)) || ''
@@ -277,10 +284,12 @@ export async function callModel(model, messages, { temperature = 0.75, maxTokens
     const { m, t } = attempts[i]
     try {
       const reply = await callOnce(m, messages, { temperature: t, maxTokens })
-      if (!looksBroken(reply)) return reply
+      if (!looksBroken(reply)) { lastBrain.model = m; lastBrain.backup = m !== model; return reply }
       lastReply = reply // garbled — try the next attempt
     } catch (err) {
       lastError = err
+      // Too much for his main brain to read? Don't hand it to the backup — let Light give him less to read and try him again
+      if (i === 0 && !lastChance && tooBigError(err.message)) throw err
       // Main brain is down (not just garbled): skip the calmer retry and go straight to the backup.
       if (i === 0) i++
     }
@@ -335,7 +344,7 @@ export function moonPhase(date = new Date()) {
 export function londonNow() {
   const clock = new Date().toLocaleString('en-GB', {
     timeZone: 'Europe/London',
-    weekday: 'long', day: 'numeric', month: 'long',
+    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
     hour: '2-digit', minute: '2-digit',
   })
   const hour = Number(new Date().toLocaleString('en-GB', { timeZone: 'Europe/London', hour: '2-digit', hour12: false }))
@@ -356,7 +365,7 @@ export const DEFAULT_EYES = 'qwen/qwen2.5-vl-72b-instruct'
 
 export async function describeImage(dataUrl, caption = '') {
   const eyes = (await redis('GET', KEYS.eyesModel).catch(() => null)) || DEFAULT_EYES
-  const prompt = `Describe this image in rich, accurate detail for someone who cannot see it. Include everything visible: people (appearance, expression, clothing, pose), setting, objects, colours, lighting, mood, and any text exactly as written. Be factual — only describe what is really there.${caption ? ` The person sharing it said: "${caption}"` : ''}`
+  const prompt = `Describe this image in rich, accurate detail for someone who cannot see it. Include everything visible: people (appearance, expression, clothing, pose), setting, objects, colours, lighting, mood, and any text exactly as written. If it shows clothing or a product (e.g. a dress in a shop screenshot), describe the item in detail: colour, pattern, cut and shape, neckline, sleeves, length, fabric and how it looks like it would fit and move — plus the shop, product name, sizes and price if they're shown. Be factual — only describe what is really there.${caption ? ` The person sharing it said: "${caption}"` : ''}`
   try {
     return await callOnce(eyes, [{
       role: 'user',
