@@ -275,3 +275,30 @@ textarea.vows { font-family: var(--serif); font-size: 19px; line-height: 1.6; mi
 .model-row .model { flex: 1; }
 .model.call { border-color: rgba(120, 200, 255, 0.6); }
 .call-timing { max-width: 340px; text-align: center; opacity: 0.8; }
+.status { white-space: pre-line; }
+.bubble-backup { font-size: 11px; opacity: 0.6; margin-right: 6px; font-style: italic; }
+
+/* Incoming call */
+.call.incoming .call-status { font-size: 17px; }
+.incoming-buttons { display: flex; gap: 40px; margin-top: 30px; }
+.answer-btn, .decline-btn { width: 84px; height: 84px; border-radius: 50%; border: none; color: #fff; font-size: 15px; font-weight: 600; cursor: pointer; }
+.answer-btn { background: #2fbf71; box-shadow: 0 0 24px rgba(47, 191, 113, 0.5); animation: breathe 1.6s ease-in-out infinite; }
+.decline-btn { background: #e0474c; box-shadow: 0 0 20px rgba(224, 71, 76, 0.4); }
+.bubble-missed { font-size: 12px; opacity: 0.75; margin-bottom: 4px; }
+
+/* Several photos */
+.attach-preview.multi { flex-direction: column; align-items: stretch; gap: 6px; }
+.attach-strip { display: flex; gap: 10px; overflow-x: auto; padding: 8px 8px 2px 0; }
+.attach-item { position: relative; flex-shrink: 0; }
+.attach-item img { width: 60px; height: 60px; object-fit: cover; border-radius: 10px; border: 1px solid var(--line); display: block; }
+.attach-num, .grid-pic span { position: absolute; left: 4px; bottom: 4px; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px; background: rgba(20, 12, 36, 0.85); color: #fff; font-size: 11px; font-weight: 700; display: grid; place-items: center; }
+.attach-x { position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; border-radius: 50%; border: none; background: #2a1d3f; color: #fff; font-size: 11px; line-height: 20px; padding: 0; cursor: pointer; }
+.attach-more { flex-shrink: 0; width: 60px; height: 60px; border-radius: 10px; border: 1px dashed var(--line); background: transparent; color: var(--muted); font-size: 24px; cursor: pointer; }
+.bubble-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-bottom: 6px; max-width: 260px; }
+.grid-pic { position: relative; }
+.grid-pic img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 8px; display: block; }
+
+/* Vows */
+.vows-text { white-space: pre-wrap; line-height: 1.6; font-family: var(--serif); font-size: 17px; }
+.his-vows { border-color: rgba(220, 180, 100, 0.45); box-shadow: 0 0 24px rgba(220, 180, 100, 0.12); }
+.hear-btn { margin-left: 2px; }
