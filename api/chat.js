@@ -184,19 +184,22 @@ export default async function handler(req, res) {
           runMove(parseMove(t[1])).then((m) => send({ toyMove: m || { action: 'Stop' } })).catch((err) => send({ toyMove: { error: err.message } }))
         }
       }
+      // calls can use their own (faster) brain, if Sarah picked one
+      const callBrain = voice ? ((await redis('GET', KEYS.callModel).catch(() => null)) || '') : ''
+      const brain = callBrain || model
       try {
         for (const budget of (voice ? [12000, 5000] : [90000, 35000, 12000])) {
           try {
             reply = live && !soFar
-              ? await callStream(model, buildMessages(budget), { onText })
-              : await callModel(model, buildMessages(budget))
+              ? await callStream(brain, buildMessages(budget), { onText })
+              : await callModel(brain, buildMessages(budget))
             break
           } catch (err) {
             if (live && soFar) throw err // already speaking — can't start again
             const tooBig = /context|too long|too many tokens|maximum|length|exceed|413/i.test(err.message)
             if (budget === (voice ? 5000 : 12000) || !tooBig) {
               if (!live) throw err
-              reply = await callModel(model, buildMessages(5000)) // streaming failed — get the whole reply the normal way
+              reply = await callModel(brain, buildMessages(5000)) // streaming failed — get the whole reply the normal way
               send({ d: reply })
               break
             }
