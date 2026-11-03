@@ -8,6 +8,36 @@ const TOKEN = process.env.ZINC_CLIENT_TOKEN
 // If it's not set, Zinc buys with its own Amazon account and takes the cost from your Zinc wallet.
 const AMAZON_ACCOUNT_ID = (process.env.ZINC_AMAZON_ACCOUNT_ID || '').trim()
 
+// Sarah's own Amazon account, linked from Gifts 🎁 (Amazon UK won't let Zinc check out as a guest).
+// Light only keeps Zinc's reference to it — never her password.
+const AMAZON_LINK = 'light:amazonaccount'
+export async function getAmazonLink() { return getJSON(AMAZON_LINK, null) }
+export async function linkAmazon({ email, password, totp }) {
+  email = String(email || '').trim(); password = String(password || '')
+  totp = String(totp || '').replace(/\s+/g, '')
+  if (!email || !password) throw new Error('Enter your Amazon email and password.')
+  const old = await getAmazonLink()
+  if (old?.shortId) await zinc(`/managed-accounts/${encodeURIComponent(old.shortId)}`, { method: 'DELETE' }).catch(() => {})
+  let last
+  for (const retailer of ['amazon-uk', 'amazon']) {
+    const body = { email, password, retailer }
+    if (totp) body.totp_secret = totp
+    const { status, data } = await zinc('/managed-accounts', { method: 'POST', body })
+    if (status < 300 && data.short_id) {
+      const link = { shortId: data.short_id, email, retailer, hasTotp: !!data.has_totp, forwarding: data.forwarding_email || '', at: Date.now() }
+      await setJSON(AMAZON_LINK, link)
+      return link
+    }
+    last = zincError(data, `status ${status}`)
+  }
+  throw new Error('Zinc couldn’t link your Amazon account: ' + last)
+}
+export async function unlinkAmazon() {
+  const old = await getAmazonLink()
+  if (old?.shortId) await zinc(`/managed-accounts/${encodeURIComponent(old.shortId)}`, { method: 'DELETE' }).catch(() => {})
+  await setJSON(AMAZON_LINK, null)
+}
+
 export const DEFAULT_GIFT_SETTINGS = {
   enabled: false, // off until Sarah has filled everything in and switched it on
   everyDays: 14, // roughly how often
@@ -33,10 +63,28 @@ export function cleanDomain(d) {
   return String(d || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').split(/[/?#]/)[0].slice(0, 100)
 }
 
+// UK adult & lingerie shops Sarah asked for — added to her list once, untested (she taps Test shops to check them with Zinc)
+export const ADULT_SHOPS = [
+  { domain: 'hotoctopuss.com', name: 'Hot Octopuss' },
+  { domain: 'smilemakerscollection.com', name: 'Smile Makers' },
+  { domain: 'mysteryvibe.com', name: 'MysteryVibe' },
+  { domain: 'sh-womenstore.com', name: 'Sh! Women’s Store' },
+  { domain: 'coco-de-mer.com', name: 'Coco de Mer' },
+  { domain: 'bluebella.com', name: 'Bluebella' },
+  { domain: 'playfulpromises.com', name: 'Playful Promises' },
+  { domain: 'honeybirdette.com', name: 'Honey Birdette' },
+]
+
 export async function getGiftSettings() {
   const s = await getJSON(KEYS.giftSettings, {})
   const merged = { ...DEFAULT_GIFT_SETTINGS, ...s, address: { ...DEFAULT_GIFT_SETTINGS.address, ...(s.address || {}) } }
   if (!Array.isArray(s.shops)) merged.shops = STARTER_SHOPS.map((x) => ({ ...x, status: 'untested', note: '' }))
+  if (!s.adultShopsAdded) {
+    const have = new Set(merged.shops.map((x) => x.domain))
+    merged.shops = [...merged.shops, ...ADULT_SHOPS.filter((x) => !have.has(x.domain)).map((x) => ({ ...x, status: 'untested', note: '' }))]
+    merged.adultShopsAdded = true
+    await setJSON(KEYS.giftSettings, { ...s, shops: merged.shops, adultShopsAdded: true }).catch(() => {})
+  }
   return merged
 }
 
@@ -257,7 +305,12 @@ export async function sendSurprise({ practice = false } = {}) {
     fulfillment: { gift: 'best_effort' },
     idempotency_key: `light-${record.id}`.slice(0, 36),
   }
-  if (AMAZON_ACCOUNT_ID) body.retailer_credentials_id = AMAZON_ACCOUNT_ID
+  // Amazon orders go through her own Amazon account (Amazon UK has no guest checkout)
+  const amazonId = AMAZON_ACCOUNT_ID || (await getAmazonLink())?.shortId
+  if (/amazon\./i.test(chosen.url || '')) {
+    if (!amazonId) throw new Error('Amazon UK needs your own Amazon account linked first — see “Link your Amazon account” in Gifts 🎁.')
+    body.retailer_credentials_id = amazonId
+  }
   const { status, data } = await zinc('/orders', { method: 'POST', body })
   if (status >= 400 || !data.id) {
     const msg = zincError(data, `status ${status}`)
