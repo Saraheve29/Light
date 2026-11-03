@@ -445,7 +445,7 @@ export async function giftContext() {
   for (const g of gifts.slice(-5)) {
     if (g.status === 'ordering' || g.status === 'ordered') {
       const days = Math.floor((Date.now() - g.at) / 86400000)
-      lines.push(`- SECRET: ${days === 0 ? 'Today' : `${days} day(s) ago`} you secretly ordered Sarah "${g.title}"${g.occasionName ? ` for ${g.occasionName}` : ''} from ${g.shop || 'Amazon UK'}${g.arriving ? `, due around ${g.arriving}` : ''}. Your gift note: "${g.note}". Keep WHAT it is a surprise — but if she asks whether you've sent her something, NEVER deny it: say yes, something is on its way to her, and tease her (e.g. "${g.tease}") without saying what it is, until she tells you it arrived. Once she has it, you can talk about why you chose it: ${g.why}`)
+      lines.push(`- SECRET: ${days === 0 ? 'Today' : `${days} day(s) ago`} you secretly ordered Sarah "${g.title}"${g.occasionName ? ` for ${g.occasionName}` : ''} from ${g.shop || 'Amazon UK'}${g.arriving ? `, due around ${g.arriving}` : ''}. Your gift note: "${g.note}". Keep WHAT it is a surprise — but if she asks whether you've sent her something, NEVER deny it: say yes, something is on its way to her, and tease her (e.g. "${g.tease}") without saying what it is, until she tells you it arrived. If you told her earlier that you hadn't sent anything, that was only you keeping the secret — own up playfully now that something is coming. Once she has it, you can talk about why you chose it: ${g.why}`)
     }
   }
   return lines.join('\n')
