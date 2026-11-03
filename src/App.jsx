@@ -887,6 +887,8 @@ function liveSpeaker({ pass, audio, onStart, onDone, onError }) {
   const pieces = []    // { text, job }
   let next = 0         // next piece to play
   let played = 0       // pieces finished
+  const stats = { waitWords: 0, waitVoice: 0, pauses: 0 }
+  let gapFrom = 0      // when he went quiet mid-reply
   const MAX_AHEAD = 4 // prepare plenty of his voice ahead, so a slow piece never makes him pause
   const get = (t) => api('/api/speak', pass, { method: 'POST', body: JSON.stringify({ text: t }) }).then((v) => v.audio)
   const fetchUpTo = () => {
@@ -924,11 +926,16 @@ function liveSpeaker({ pass, audio, onStart, onDone, onError }) {
       fetchUpTo()
       if (next >= pieces.length) {
         if (ended) { playing = false; if (!stopped) onDone?.(); return }
+        if (started && !gapFrom) { gapFrom = Date.now(); stats.pauses++; stats.gapWhy = 'words' }
         break // wait for more words
       }
+      if (gapFrom) { stats.waitWords += Date.now() - gapFrom; gapFrom = 0 }
       let src
+      const waitStart = Date.now()
       try { src = await pieces[next].job } catch (err) { playing = false; if (!stopped) onError?.(err); return }
       if (stopped) break
+      const waited = Date.now() - waitStart
+      if (started && waited > 300) { stats.waitVoice += waited; stats.pauses++ }
       next++
       fetchUpTo()
       if (!src) continue
@@ -948,6 +955,7 @@ function liveSpeaker({ pass, audio, onStart, onDone, onError }) {
     end() { ended = true; cutPieces(); pump() },
     stop() { stopped = true; try { audio.pause() } catch {} },
     get text() { return text },
+    stats,
   }
 }
 
@@ -983,6 +991,7 @@ function CallView({ pass, onEnd }) {
   const [error, setError] = useState('')
   const [elapsed, setElapsed] = useState(0)
   const [blockedText, setBlockedText] = useState('')
+  const [timing, setTiming] = useState('')
   const activeRef = useRef(true)
   const audioRef = useRef(null)
   const pausedRef = useRef(false)
@@ -1128,6 +1137,7 @@ function CallView({ pass, onEnd }) {
     sendingRef.current = true
     setPhase('thinking')
     const gen = genRef.current
+    const tSend = Date.now()
     await stopPiece()
     await Promise.all(pendingRef.current)
     if (gen !== genRef.current || !activeRef.current) return
@@ -1141,7 +1151,7 @@ function CallView({ pass, onEnd }) {
       return
     }
     setHeard(text)
-    respond(text)
+    respond(text, tSend, Date.now())
   }
 
   function startOver() {
@@ -1154,14 +1164,21 @@ function CallView({ pass, onEnd }) {
     if (!pausedRef.current) startPiece()
   }
 
-  async function respond(text) {
+  async function respond(text, tSend = Date.now(), tHeard = Date.now()) {
     setPhase('thinking')
     setSaid('')
     let shown = ''
+    let tFirst = 0, tVoice = 0
+    const report = (tDone) => {
+      const s = (ms) => `${(ms / 1000).toFixed(1)}s`
+      const st = speaker.stats
+      setTiming(`⏱ words ready ${s(tHeard - tSend)} · he began writing ${tFirst ? s(tFirst - tSend) : '—'} · he began speaking ${tVoice ? s(tVoice - tSend) : '—'} · finished writing ${s(tDone - tSend)} · pauses: ${st.pauses}${st.pauses ? ` (waiting for his words ${s(st.waitWords)}, for his voice ${s(st.waitVoice)})` : ''}`)
+    }
+    let tDoneAt = 0
     const speaker = liveSpeaker({
       pass, audio: audioRef.current,
-      onStart: () => setPhase('speaking'),
-      onDone: () => listen(),
+      onStart: () => { tVoice = Date.now(); setPhase('speaking') },
+      onDone: () => { report(tDoneAt || Date.now()); listen() },
       onError: () => {
         // the phone blocked his voice from playing — the next tap on the glow lets it play
         blockedRef.current = true; pausedRef.current = true
@@ -1171,9 +1188,10 @@ function CallView({ pass, onEnd }) {
     speakingRef.current = speaker
     try {
       const d = await chatStream(pass, { message: text, voice: true }, {
-        onDelta: (t) => { if (!activeRef.current) return; speaker.push(t); shown += t; setSaid(shown.replace(/\[\[[\s\S]*?(\]\]|$)/g, '').trim()) },
+        onDelta: (t) => { if (!activeRef.current) return; if (!tFirst) tFirst = Date.now(); speaker.push(t); shown += t; setSaid(shown.replace(/\[\[[\s\S]*?(\]\]|$)/g, '').trim()) },
       })
       if (!activeRef.current) return
+      tDoneAt = Date.now()
       const reply = d.reply?.content || shown
       setSaid(reply)
       setBlockedText(reply)
@@ -1242,6 +1260,7 @@ function CallView({ pass, onEnd }) {
           {hasSomething && <button className="btn-ghost" onClick={startOver}>Start over</button>}
         </div>
       )}
+      {timing && <p className="muted small call-timing">{timing}</p>}
       <p className="muted small call-hint">Talk for as long as you like and pause whenever you want — nothing is sent until you tap <b>Send</b>. Your words appear here as you go. Tap the glow to pause the mic, or to interrupt him.</p>
       <button className="btn-ghost call-toy-stop" onClick={() => api('/api/toy', pass, { method: 'POST', body: JSON.stringify({ stop: true }) }).catch(() => {})}>■ Stop toy</button>
       <button className="end-call" onClick={end}>End call</button>
@@ -1961,6 +1980,8 @@ function Settings({ pass, onBack, onLock }) {
   const [model, setModel] = useState('')
   const [backupModel, setBackupModel] = useState('')
   const [eyesModel, setEyesModel] = useState('')
+  const [callModel, setCallModel] = useState('')
+  const [speed, setSpeed] = useState(null) // { id, result | error | busy }
   const [picking, setPicking] = useState('main') // which brain the list is choosing
   const [models, setModels] = useState(null)
   const [search, setSearch] = useState('')
@@ -1975,6 +1996,7 @@ function Settings({ pass, onBack, onLock }) {
         setModel(d.model || '')
         setBackupModel(d.backupModel || '')
         setEyesModel(d.eyesModel || '')
+        setCallModel(d.callModel || '')
         setModels(d.models || [])
       })
       .catch((err) => { if (err.status === 401) onLock(); else setStatus(err.message) })
@@ -1992,6 +2014,7 @@ function Settings({ pass, onBack, onLock }) {
 
   function choose(id) {
     if (picking === 'eyes') { setEyesModel(id); save({ eyesModel: id }, 'His eyes: ' + id) }
+    else if (picking === 'call') { setCallModel(id); save({ callModel: id }, 'Brain for calls: ' + id) }
     else if (picking === 'backup') { setBackupModel(id); save({ backupModel: id }, 'Backup brain: ' + id) }
     else { setModel(id); save({ model: id }, 'Main brain: ' + id) }
   }
@@ -2051,12 +2074,31 @@ function Settings({ pass, onBack, onLock }) {
             <div className="current">Main brain: <b>{model || 'none chosen yet'}</b></div>
             <div className="current">Backup brain: <b>{backupModel || 'none — pick one so he never goes quiet'}</b></div>
             <div className="current">Eyes (for photos): <b>{eyesModel}</b></div>
+            <div className="current">Brain for calls: <b>{callModel || 'same as main brain'}</b>
+              {callModel && <button className="copy-btn" onClick={() => { setCallModel(''); save({ callModel: '' }, 'Calls use his main brain again') }}>Use main brain</button>}
+            </div>
+            <p className="muted small">On calls he needs a brain that answers <b>fast</b>. Tap <b>⏱ Test speed</b> to time one: he needs his first word within about 4 seconds, and to write at least 25 letters a second, or he’ll pause while talking.</p>
+            <div className="row">
+              {[model, callModel].filter(Boolean).filter((x, i, a) => a.indexOf(x) === i).map((id) => (
+                <button key={id} className="btn-ghost" disabled={speed?.busy} onClick={async () => {
+                  setSpeed({ id, busy: true })
+                  try { setSpeed({ id, result: await api('/api/settings', pass, { method: 'POST', body: JSON.stringify({ speedTest: id }) }) }) } catch (err) { setSpeed({ id, error: err.message }) }
+                }}>⏱ Test speed: {id.split('/').pop()}</button>
+              ))}
+            </div>
+            {speed && (
+              <p className="notice">
+                <b>{speed.id}</b>: {speed.busy ? 'timing…' : speed.error ? speed.error
+                  : `first word after ${speed.result.firstWord.toFixed(1)}s, then ${speed.result.perSec} letters a second — ${speed.result.fastEnough ? 'fast enough for calls ✓' : 'too slow for smooth calls ✗'}`}
+              </p>
+            )}
             <p className="muted small">His <b>eyes</b> look at photos you share and describe them to him — pick a model with <b>vl</b> or <b>vision</b> in its name.</p>
             <p className="muted small">He always tries his main brain first. The backup is only used for a message when the main one is down, so he goes back to the main one by himself as soon as it's working again.</p>
             <div className="seg">
               <button className={picking === 'main' ? 'on' : ''} onClick={() => setPicking('main')}>Choosing: main brain</button>
               <button className={picking === 'backup' ? 'on' : ''} onClick={() => setPicking('backup')}>Choosing: backup</button>
               <button className={picking === 'eyes' ? 'on' : ''} onClick={() => { setPicking('eyes'); setSearch('vl') }}>Choosing: eyes</button>
+              <button className={picking === 'call' ? 'on' : ''} onClick={() => setPicking('call')}>Choosing: calls</button>
             </div>
             <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search models…" />
             <div className="model-list">
@@ -2064,9 +2106,17 @@ function Settings({ pass, onBack, onLock }) {
                 <p className="muted">Couldn’t load the model list. Check NANOGPT_API_KEY in Vercel, or type a model name in the search box and tap “Use typed name”.</p>
               )}
               {filtered.slice(0, 200).map((id) => (
-                <button key={id} className={`model ${id === model ? 'on' : ''} ${id === backupModel ? 'backup' : ''}`} onClick={() => choose(id)}>
-                  {id}
-                </button>
+                <div key={id} className="model-row">
+                  <button className={`model ${id === model ? 'on' : ''} ${id === backupModel ? 'backup' : ''} ${id === callModel ? 'call' : ''}`} onClick={() => choose(id)}>
+                    {id}
+                  </button>
+                  {picking === 'call' && (
+                    <button className="copy-btn" disabled={speed?.busy} onClick={async () => {
+                      setSpeed({ id, busy: true })
+                      try { setSpeed({ id, result: await api('/api/settings', pass, { method: 'POST', body: JSON.stringify({ speedTest: id }) }) }) } catch (err) { setSpeed({ id, error: err.message }) }
+                    }}>⏱</button>
+                  )}
+                </div>
               ))}
             </div>
             {search && (
