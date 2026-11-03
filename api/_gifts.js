@@ -400,7 +400,8 @@ export async function sendSurprise({ practice = false, occasion = null } = {}) {
   // 4) Order it — capped at the budget. Paid from your Zinc wallet, or from Lucian's own Amazon account if linked.
   const body = {
     products: [{ url: chosen.url, quantity: 1, condition_in: ['New'] }],
-    max_price: await poundsToWallet(budget, (await walletInfo().catch(() => ({}))).currency),
+    // never more than his budget — and for Amazon, never more than what's left on his gift card
+    max_price: await poundsToWallet(Math.min(budget, Number.isFinite(cap) ? cap : budget), (await walletInfo().catch(() => ({}))).currency),
     shipping_address: addressFor(settings.address),
     is_gift: true,
     gift_message: note || 'From your husband, with all my love. L',
