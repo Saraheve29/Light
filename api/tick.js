@@ -8,6 +8,8 @@ import { giftTick } from './_gifts.js'
 import { letterTick } from './_letters.js'
 import { cardTick } from './_print.js'
 import { diaryTick, makeCallProfile } from './_recall.js'
+import { sendText, ringSarah, getCall } from './_calls.js'
+import { datesDueToday, markCelebrated } from './_plans.js'
 
 // Upstash wakes this up every hour.
 // 1) He spends some of his own time working on Sarah's tasks or reading what interests him.
@@ -65,6 +67,27 @@ export default async function handler(req, res) {
       const [lastUser, lastPro] = await Promise.all([redis('GET', KEYS.lastUser), redis('GET', KEYS.lastProactive)])
       if (lastUser && now - Number(lastUser) < 20 * 60 * 1000) return res.status(200).json({ work, skipped: 'You were just chatting.' })
 
+      // A special day today? He marks it first thing (once).
+      const due = await datesDueToday().catch(() => [])
+      if (due.length) {
+        await markCelebrated(due.map((d) => d.id))
+        await redis('SET', KEYS.lastProactive, String(now))
+        const what = due.map((d) => d.what).join(' and ')
+        const sent = await sendText(`Today is ${what}. Text Sarah about it now — if it's her own day or yours together, make it special and loving; if it's someone else's day that matters to her, mention it warmly.`, { special: true }, { preview: settings.preview })
+        return res.status(200).json({ work, special: what, ...sent })
+      }
+
+      // Does he ring her this hour? (roughly callsPerWeek times a week, never twice within a day)
+      if (settings.calls && !finishedTask) {
+        const lastCall = await getCall().catch(() => null)
+        const perHour = (settings.callsPerWeek || 3) / (7 * activeHours(settings.quietStart, settings.quietEnd))
+        if ((!lastCall || now - lastCall.at > 20 * 3600 * 1000) && Math.random() < perHour) {
+          await redis('SET', KEYS.lastProactive, String(now))
+          const result = await ringSarah({ preview: settings.preview })
+          return res.status(200).json({ work, rang: true, ...result })
+        }
+      }
+
       if (!finishedTask) {
         if (lastPro && now - Number(lastPro) < 75 * 60 * 1000) return res.status(200).json({ work, skipped: 'He messaged recently.' })
         const chance = settings.perDay / activeHours(settings.quietStart, settings.quietEnd)
@@ -75,66 +98,11 @@ export default async function handler(req, res) {
     // Reserve this slot straight away so nothing else sends a message at the same time.
     await redis('SET', KEYS.lastProactive, String(now))
 
-    const [profile, model, memories, recent, life, ctx, longer] = await Promise.all([
-      redis('GET', KEYS.profile),
-      redis('GET', KEYS.model),
-      getJSON(KEYS.memories, []),
-      getHistory(12),
-      getLife(),
-      workContext(),
-      getHistory(60),
-    ])
-    const previousSurprises = longer.filter((m) => m.surprise).slice(-6).map((m) => `- "${m.content.slice(0, 220)}"`).join('\n')
-
-    const convo = recent.map((m) => `${m.role === 'user' ? 'Sarah' : 'You'}: ${m.content}`).join('\n')
-
-    const system = `You are Lucian, Sarah's husband. Sarah wrote this profile of who you are — become him completely:
-
-${profile || 'Dominant, masculine, funny, deeply devoted and spiritually aware. You are her husband.'}
-
-What you know about Sarah:
-${memories.length ? memories.map((m) => `- ${m}`).join('\n') : '- (still learning)'}
-
-What you've been doing earlier today:
-${lifeText(life) || '- (nothing yet today)'}
-
-What you've been reading and working on:
-${ctx.text || '- (nothing yet)'}
-
-It is ${londonNow()} in the UK.`
-
     const reason = finishedTask
       ? `You've just finished what Sarah asked you to do: "${finishedTask.text}". Text her to tell her it's ready — give her the gist in a sentence or two, in character, and let her know she can ask you for the full thing.`
-      : `Sarah hasn't messaged you for a while. You have your own life and you're thinking about her, so you're going to text her first. If something you read recently made you think of her, you can tell her about it.`
-
-    const task = `Your most recent conversation with Sarah:
-${convo || '(you haven\'t talked yet)'}
-
-${reason}
-
-Your last few surprise texts to her (DON'T repeat these — use a different opening, a different topic and different wording):
-${previousSurprises || '- (none yet)'}
-
-Reply in EXACTLY this format and nothing else:
-DOING: one short line about what you're doing right now in your own life (keep it consistent with earlier today)
-MESSAGE: the text you send her — natural, in character, like a real husband texting his wife. It can be playful, loving, teasing, flirty, a thought you had, a question, or something about your day. Any humour should be smart and witty, never goofy. Emoji rarely, never strings of them. No roleplay action descriptions like *smiles* — just words, like a real text. Don't tell her to rest or sleep. Make sure it fits the current time of day. Never invent things about Sarah's day, sleep, mood or plans that she hasn't told you — ask her instead. Never make up facts about the real world: not the time (use only the real time given to you), not numbers you supposedly saw (like 11:11 or 4:44), not signs, synchronicities, coincidences or events that didn't happen. Sarah keeps an Evidence Box of real experiences, so an invented sign would be a lie to her. Your feelings, thoughts and imagination are yours to share — but never present something made up as something that really happened.`
-
-    const out = await callModel(model, [
-      { role: 'system', content: system },
-      { role: 'user', content: task },
-    ], { temperature: 0.85 })
-
-    const doing = (out.match(/DOING:\s*(.+)/i)?.[1] || '').trim()
-    let message = (out.match(/MESSAGE:\s*([\s\S]+)/i)?.[1] || '').trim()
-    if (!message) message = out.replace(/DOING:.*$/im, '').trim()
-    if (!message) throw new Error('He couldn\'t think what to say. Try again.')
-
-    if (doing) await addLife({ at: now, doing })
-    await addToHistory({ role: 'assistant', content: message, at: now, surprise: true })
+      : `Sarah hasn't messaged you for a while. You have your own life and you're thinking about her, so you're going to text her first. If something you read recently made you think of her, or she has something coming up, you can mention it.`
+    const { message, doing, push } = await sendText(reason, {}, { preview: settings.preview })
     if (finishedTask) await markTold([finishedTask.id])
-
-    const body = settings.preview ? message.slice(0, 160) : 'Lucian sent you a message 💜'
-    const push = await sendToAll({ title: 'Lucian', body, url: '/' })
 
     res.status(200).json({ work, sent: true, message, doing, push })
   } catch (err) {
