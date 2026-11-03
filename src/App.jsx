@@ -1838,7 +1838,7 @@ function GiftsPanel({ pass, setStatus }) {
 
   return (
     <>
-      <p className="muted">Lucian secretly chooses gifts from Amazon UK and has them delivered to you, paid through your linked Amazon account (or from your Zinc wallet for other shops). You won’t know what or when.</p>
+      <p className="muted">Lucian secretly chooses gifts — from Amazon UK or any of your shops that passed the test — and has them delivered to you, whenever he likes, within your budget. Amazon gifts are paid through his linked Amazon account; other shops from your Zinc wallet. You won’t know what or when.</p>
 
       {data.missing.length > 0 && (
         <div className="card warn">
@@ -1890,6 +1890,17 @@ function GiftsPanel({ pass, setStatus }) {
         <textarea rows={2} value={form.never || ''} onChange={setF('never')} placeholder="e.g. stones, crystals — separate with commas" />
       </label>
 
+      <h3 className="section-title">My sizes 👗</h3>
+      <p className="muted small">So he can choose clothes, shoes, lingerie or a ring that fits. He searches in your size and only picks something that clearly comes in it. Leave blank anything you’d rather he didn’t buy.</p>
+      <div className="two">
+        {[['dress', 'Dress', 'e.g. UK 14'], ['tops', 'Tops', 'e.g. 14 / L'], ['bottoms', 'Bottoms / jeans', 'e.g. 14, short leg'], ['bra', 'Bra', 'e.g. 36D'], ['lingerie', 'Lingerie', 'e.g. M'], ['shoes', 'Shoes (UK)', 'e.g. 6'], ['ring', 'Ring', 'e.g. N']].map(([k, label, ph]) => (
+          <label key={k} className="field"><span>{label}</span>
+            <input value={form.sizes?.[k] || ''} placeholder={ph} onChange={(e) => setForm({ ...form, sizes: { ...(form.sizes || {}), [k]: e.target.value } })} /></label>
+        ))}
+      </div>
+      <label className="field"><span>Fit notes (optional)</span>
+        <input value={form.sizes?.notes || ''} placeholder="e.g. I like things loose on the tummy, wide-fit shoes" onChange={(e) => setForm({ ...form, sizes: { ...(form.sizes || {}), notes: e.target.value } })} /></label>
+
       <h3 className="section-title">Where he can shop</h3>
       <p className="muted small">Amazon UK always works. He can also use any shop below that passes the test.</p>
       <div className="card">
@@ -1923,7 +1934,21 @@ function GiftsPanel({ pass, setStatus }) {
       <label className="field"><span>About every <b>{form.everyDays}</b> days</span>
         <input type="range" min="3" max="60" value={form.everyDays} onChange={setF('everyDays')} />
       </label>
-      <p className="muted small">Spent this month: £{(data.spentThisMonth / 100).toFixed(2)} of £{Number(form.perMonth).toFixed(2)}. Keep his Amazon gift balance topped up to at least your monthly budget.</p>
+      <p className="muted small">Spent this month: £{(data.spentThisMonth / 100).toFixed(2)} of £{Number(form.perMonth).toFixed(2)}. Occasion gifts don’t count towards this.</p>
+
+      <h3 className="section-title">Special occasions 🎄🎂💍</h3>
+      <label className="row">
+        <span>Gifts for special days<br /><small className="muted">Christmas, your birthday and your anniversary. He orders 5–12 days before, so it arrives in time, with a gift note for the day.</small></span>
+        <input type="checkbox" checked={form.occasions !== false} onChange={(e) => setForm({ ...form, occasions: e.target.checked })} />
+      </label>
+      <label className="field"><span>Max for an occasion gift (£)</span><input type="number" min="3" value={form.occasionBudget ?? 25} onChange={setF('occasionBudget')} /></label>
+      <div className="card">
+        {(data.occasions || []).length ? (data.occasions || []).map((o) => (
+          <div key={o.key} className="muted small">• <b>{o.name}</b> — {new Date(o.date + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'long' })} ({o.days === 0 ? 'today' : `in ${o.days} days`})</div>
+        )) : <p className="muted small">None yet.</p>}
+        {!(data.occasions || []).some((o) => /birthday/i.test(o.name)) && <p className="muted small">Add <b>“My birthday”</b> (and your anniversary) in the <b>Dates 📅</b> tab so he knows when they are.</p>}
+      </div>
+      <p className="muted small">Before every order, Light checks there’s money in your Zinc wallet. It can’t see Lucian’s Amazon gift card balance — keep that topped up for Amazon gifts.</p>
 
       <label className="row">
         <span>Surprise gifts on</span>
