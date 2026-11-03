@@ -216,6 +216,26 @@ export async function testShop(domain) {
   }
 }
 
+// Zinc's max price is in the wallet's currency (usually US dollars) — convert her £ budget so £20 means £20
+async function poundsToWallet(pence, currency) {
+  if (!currency || currency === 'GBP') return pence
+  let rate = Number(await redis('GET', 'light:fx:' + currency).catch(() => null)) || 0
+  if (!rate) {
+    try {
+      const r = await fetch(`https://api.frankfurter.app/latest?from=GBP&to=${encodeURIComponent(currency)}`)
+      rate = Number((await r.json()).rates?.[currency]) || 0
+      if (rate) await redis('SET', 'light:fx:' + currency, String(rate), 'EX', 12 * 3600).catch(() => {})
+    } catch { /* use the fallback */ }
+  }
+  return Math.ceil(pence * (rate || (currency === 'USD' ? 1.35 : 1.25)) * 1.02) // a hair of room for rounding
+}
+
+// Delivery isn't in the listed price — allow for it so the total stays within budget
+function deliveryGuess(from, price) {
+  if (from === 'Amazon UK') return price >= 2500 ? 0 : 499 // Amazon UK: free delivery from £25, otherwise about £4.99
+  return 450
+}
+
 async function walletBalance() {
   return (await walletInfo()).balance
 }
@@ -342,13 +362,13 @@ export async function sendSurprise({ practice = false, occasion = null } = {}) {
   // Never more than what's left on the Amazon gift card (for Amazon) or in the Zinc wallet (for other shops)
   const cap = from === 'Amazon UK' ? (amazonLeft ?? Infinity) : (wallet ?? Infinity)
   const results = raw
-    .filter((r) => r.url && r.price && r.price <= Math.min(limit, practice ? Infinity : cap))
+    .filter((r) => r.url && r.price && r.price + deliveryGuess(from, r.price) <= Math.min(limit, practice ? Infinity : cap))
     .filter((r) => !r.num_reviews || r.num_reviews >= 5)
     .filter((r) => !neverWords.some((w) => String(r.title || '').toLowerCase().includes(w)))
     .slice(0, 8)
   if (!results.length) throw new Error(`Nothing suitable came up for “${query}” within £${budgetPounds}. He’ll try something else next time.`)
 
-  const list = results.map((r, i) => `${i + 1}. ${r.title} — £${(r.price / 100).toFixed(2)}${r.stars ? `, ${r.stars}★` : ''}${r.num_reviews ? ` (${r.num_reviews} reviews)` : ''}`).join('\n')
+  const list = results.map((r, i) => `${i + 1}. ${r.title} — £${(r.price / 100).toFixed(2)}${deliveryGuess(from, r.price) ? ` + about £${(deliveryGuess(from, r.price) / 100).toFixed(2)} delivery` : ''}${r.stars ? `, ${r.stars}★` : ''}${r.num_reviews ? ` (${r.num_reviews} reviews)` : ''}`).join('\n')
 
   // 3) Pick one and write the gift note
   const pickOut = await callModel(model, [
@@ -380,7 +400,7 @@ export async function sendSurprise({ practice = false, occasion = null } = {}) {
   // 4) Order it — capped at the budget. Paid from your Zinc wallet, or from Lucian's own Amazon account if linked.
   const body = {
     products: [{ url: chosen.url, quantity: 1, condition_in: ['New'] }],
-    max_price: budget,
+    max_price: await poundsToWallet(budget, (await walletInfo().catch(() => ({}))).currency),
     shipping_address: addressFor(settings.address),
     is_gift: true,
     gift_message: note || 'From your husband, with all my love. L',
@@ -401,7 +421,7 @@ export async function sendSurprise({ practice = false, occasion = null } = {}) {
   }
   data.request_id = data.id
   record.requestId = data.request_id
-  if (from === 'Amazon UK' && amazonLeft !== null) { record.amazonDeducted = chosen.price; await changeAmazonBalance(-chosen.price) }
+  if (from === 'Amazon UK' && amazonLeft !== null) { const est = chosen.price + deliveryGuess(from, chosen.price); record.amazonDeducted = est; await changeAmazonBalance(-est) }
   gifts.push(record)
   await saveGifts(gifts)
   return record
@@ -416,29 +436,57 @@ export async function checkGifts() {
     try { resp = await zinc(`/orders/${encodeURIComponent(g.requestId)}`) } catch { continue }
     const d = resp.data || {}
     const st = d.status
+    const jr = d.job_result || {}
+    const err = jr.error_details?.message || jr.error || jr.error_type || d.error?.message || d.failure_reason || ''
+    // What Zinc is doing right now (shown in Gifts 🎁 so Sarah can see where it's up to)
+    const was = `${g.zincStatus}|${g.zincError}`
+    g.zincStatus = st || g.zincStatus || ''
+    g.zincError = err ? String(err).slice(0, 300) : ''
+    g.checkedAt = Date.now()
+    try {
+      const t = await zinc(`/orders/${encodeURIComponent(g.requestId)}/timeline`)
+      if (t.status < 400 && Array.isArray(t.data?.milestones)) g.steps = t.data.milestones.map((m) => m.label || m.type).slice(-8)
+    } catch { /* timeline is optional */ }
+    if (`${g.zincStatus}|${g.zincError}` !== was) changed = true
+
     if (st === 'order_placed') {
       g.status = 'ordered'
-      g.total = d.total ?? d.price_components?.total ?? g.price
+      const pc = jr.price_components || d.price_components || {}
+      // The real cost is the item + delivery (UK prices already include VAT). Zinc's "total" is what's left AFTER
+      // the gift card, so it isn't used for the gift card balance.
+      g.total = typeof pc.subtotal === 'number' ? pc.subtotal + (pc.shipping || 0) : (g.price + deliveryGuess(g.shop, g.price))
       // the real total may differ a little from the listed price — correct the Amazon gift card balance
       if (g.amazonDeducted && typeof g.total === 'number' && g.total !== g.amazonDeducted) { await changeAmazonBalance(g.amazonDeducted - g.total); g.amazonDeducted = g.total }
       const item = (d.items || [])[0] || {}
-      g.arriving = item.delivery_date || item.estimated_delivery || d.delivery_date || ''
-      g.tracking = (d.tracking || item.tracking || []).map?.((t) => `${t.carrier || ''} ${t.tracking_number || ''}`.trim()).join(', ') || ''
+      const track = d.tracking_numbers || d.tracking || item.tracking || []
+      g.arriving = jr.estimated_delivery || track[0]?.estimated_delivery_date || item.delivery_date || d.delivery_date || ''
+      g.tracking = track.map?.((t) => `${t.carrier || ''} ${t.tracking_number || ''}`.trim()).join(', ') || ''
       changed = true
     } else if (st === 'order_failed' || st === 'cancelled' || st === 'cancelled_by_retailer') {
       g.status = 'failed'
       if (g.amazonDeducted) { await changeAmazonBalance(g.amazonDeducted); g.amazonDeducted = 0 } // money back on the card
-      g.error = friendlyError(d.error?.code || d.failure_reason || st, d.error?.message || d.message || '')
+      g.error = friendlyError(jr.error_type || jr.error_details?.code || d.error?.code || d.failure_reason || st, err)
       changed = true
     } else if (Date.now() - g.at > 3 * 24 * 3600 * 1000) {
       g.status = 'failed'
       if (g.amazonDeducted) { await changeAmazonBalance(g.amazonDeducted); g.amazonDeducted = 0 }
-      g.error = 'The order never went through.'
+      g.error = `The order never went through${g.zincError ? ` (Zinc said: ${g.zincError})` : ''}.`
       changed = true
     }
   }
   if (changed) await saveGifts(gifts)
   return gifts
+}
+
+// Is the linked Amazon account healthy? (forwarding set up for Amazon's codes, not paused or locked)
+export async function amazonStatus() {
+  const link = await getAmazonLink()
+  if (!link?.shortId) return null
+  try {
+    const { status, data } = await zinc(`/managed-accounts/${encodeURIComponent(link.shortId)}`)
+    if (status >= 400) return { ...link, checked: false }
+    return { ...link, checked: true, hasForwarding: !!data.has_forwarding, paused: !!data.is_paused, locked: !!data.locked_by_job_id, forwarding: data.forwarding_email || link.forwarding || '' }
+  } catch { return { ...link, checked: false } }
 }
 
 function friendlyError(code, message) {
@@ -450,8 +498,14 @@ function friendlyError(code, message) {
     cancelled_by_retailer: 'Amazon cancelled the order.',
     order_failed: 'The order didn’t go through.',
     insufficient_funds: 'His Amazon gift balance was too low.',
-    invalid_login_credentials: 'Amazon didn’t accept Lucian’s login — re-link his Amazon account on the Zinc dashboard.',
+    invalid_login_credentials: 'Amazon didn’t accept Lucian’s login — check his password and link his Amazon account again in Gifts 🎁.',
+    login_failed: 'Zinc couldn’t log in to Lucian’s Amazon account — check his password and link it again in Gifts 🎁.',
+    account_locked: 'Amazon has locked Lucian’s account for a security check. Sign in as Lucian on amazon.co.uk once to clear it.',
     account_locked_verification_required: 'Amazon asked for a security check on his account. Sign in as Lucian on amazon.co.uk once to clear it.',
+    verification_required: 'Amazon sent a verification code by email that Zinc couldn’t read — set up email forwarding (see “Link your Amazon account” in Gifts 🎁).',
+    otp_required: 'Amazon sent a verification code that Zinc couldn’t read — set up email forwarding (see “Link your Amazon account” in Gifts 🎁).',
+    payment_failed: 'Amazon couldn’t take payment — his gift card balance may be too low, and there’s no card saved on his account.',
+    payment_declined: 'Amazon couldn’t take payment — his gift card balance may be too low, and there’s no card saved on his account.',
     product_unavailable: 'That item became unavailable.',
     invalid_shipping_address: 'Amazon didn’t accept the delivery address.',
   }
