@@ -1,5 +1,5 @@
 import { checkAuth, setJSON, KEYS } from './_lib.js'
-import { upcomingHotels, walletInfo, setAmazonBalance, upcomingOccasions, SIZE_LABELS, getAmazonLink, linkAmazon, unlinkAmazon, getGiftSettings, checkGifts, sendSurprise, missingSetup, spentThisMonth, testShop, cleanDomain, DEFAULT_GIFT_SETTINGS } from './_gifts.js'
+import { amazonStatus, upcomingHotels, walletInfo, setAmazonBalance, upcomingOccasions, SIZE_LABELS, getAmazonLink, linkAmazon, unlinkAmazon, getGiftSettings, checkGifts, sendSurprise, missingSetup, spentThisMonth, testShop, cleanDomain, DEFAULT_GIFT_SETTINGS } from './_gifts.js'
 
 // GET  → settings, gifts (details hidden unless ?peek=1), what's missing
 // POST → { settings }, { practice: true }, { sendNow: true }
@@ -8,17 +8,17 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === 'GET') {
-      const [settings, gifts, amazon] = await Promise.all([getGiftSettings(), checkGifts(), getAmazonLink().catch(() => null)])
+      const [settings, gifts, amazon] = await Promise.all([getGiftSettings(), checkGifts(), amazonStatus().catch(() => null)])
       const peek = req.query?.peek === '1'
       const shown = [...gifts].reverse().map((g) => (peek || g.status === 'failed'
         ? g
-        : { id: g.id, at: g.at, status: g.status, error: g.error, hidden: true }))
+        : { id: g.id, at: g.at, status: g.status, error: g.error, zincStatus: g.zincStatus, zincError: g.zincError, steps: g.steps, occasionName: g.occasionName, hidden: true }))
       return res.status(200).json({
         settings,
         gifts: shown,
         missing: missingSetup(settings),
         spentThisMonth: spentThisMonth(gifts),
-        amazon: amazon ? { email: amazon.email, hasTotp: amazon.hasTotp, forwarding: amazon.forwarding, at: amazon.at } : null,
+        amazon: amazon ? { email: amazon.email, hasTotp: amazon.hasTotp, forwarding: amazon.forwarding, at: amazon.at, checked: amazon.checked, hasForwarding: amazon.hasForwarding, paused: amazon.paused, locked: amazon.locked } : null,
         occasions: await upcomingOccasions(400).catch(() => []),
         wallet: await walletInfo(),
         hotels: await upcomingHotels(90).catch(() => []),
