@@ -60,10 +60,11 @@ async function tts({ model, voice, speed, instructions }, text) {
     const ours = `${APP_URL}/api/speak?emb=${q.id}&s=${q.secret}&f=voice.safetensors`
     const body = { text, model, language: 'English' }
     if (q.referenceText) body.reference_text = q.referenceText
-    if (instructions) body.prompt = instructions
+    // Qwen's own defaults stop after ~16 seconds of speech and switch on a content checker — ask for neither
+    if (qwenExtras) Object.assign(body, { max_new_tokens: 2048, enable_safety_checker: false })
     // NanoGPT's own copy of his voice print is quickest to load — use it while it's still kept (6 days), then Light's copy
     if (q.falUrl && Date.now() - (q.falAt || 0) < 6 * 86400000) {
-      try { return await ttsRequest({ ...body, speaker_voice_embedding_file_url: q.falUrl }, model) } catch (err) { if (err.refused) throw err }
+      try { return await ttsRequest({ ...body, speaker_voice_embedding_file_url: q.falUrl }, model) } catch (err) { if (err.refused) throw err; trace.steps.push('NanoGPT’s copy failed — trying Light’s copy') }
     }
     return ttsRequest({ ...body, speaker_voice_embedding_file_url: ours }, model)
   }
@@ -74,7 +75,24 @@ async function tts({ model, voice, speed, instructions }, text) {
   return ttsRequest(body, model)
 }
 
+let liveMode = false // true while answering a call
+let qwenExtras = true // turned off if NanoGPT ever rejects those extra settings
+export const trace = { steps: [] } // what happened on the last request (for the speed test)
+
 async function ttsRequest(body, model) {
+  try { return await ttsRequestOnce(body, model) } catch (err) {
+    if (model === QWEN && qwenExtras && /max_new_tokens|enable_safety|unrecognized|unknown (field|param)|additional propert|not allowed/i.test(err.message)) {
+      qwenExtras = false
+      trace.steps.push('NanoGPT refused the extra Qwen settings — trying without them')
+      const { max_new_tokens, enable_safety_checker, ...plain } = body
+      return ttsRequestOnce(plain, model)
+    }
+    throw err
+  }
+}
+
+async function ttsRequestOnce(body, model) {
+  const t0 = Date.now()
   const r = await fetch(TTS_URL, {
     method: 'POST',
     headers: { 'x-api-key': KEY, 'Content-Type': 'application/json' },
@@ -91,28 +109,36 @@ async function ttsRequest(body, model) {
   const data = await r.json().catch(() => ({}))
   if (!r.ok && r.status !== 202) {
     const msg = data.error?.message || data.error || data.message || `status ${r.status}`
-    const err = new Error(String(msg))
-    err.refused = /CONTENT_POLICY|policy|moderat|flagged|not allowed/i.test(JSON.stringify(data))
+    const err = new Error(String(typeof msg === 'string' ? msg : JSON.stringify(msg)))
+    err.refused = /CONTENT_POLICY|policy|moderat|flagged|nsfw|unsafe|safety/i.test(JSON.stringify(data))
+    trace.steps.push(`error ${r.status} after ${((Date.now() - t0) / 1000).toFixed(1)}s: ${err.message.slice(0, 160)}`)
     throw err
   }
-  if (data.audioUrl) return fetchAudio(data.audioUrl)
+  if (data.audioUrl) {
+    trace.steps.push(`made in ${((Date.now() - t0) / 1000).toFixed(1)}s`)
+    return fetchAudio(data.audioUrl)
+  }
 
   // Some voices (ElevenLabs) take a moment — wait for them
   if (data.runId) {
-    const tries = model === QWEN ? 75 : 25 // Qwen can take longer — wait up to a minute
+    const tries = model === QWEN ? (liveMode ? 20 : 75) : 25 // Qwen can take longer — but on a call, don't wait more than ~15s
     for (let i = 0; i < tries; i++) {
       await new Promise((res) => setTimeout(res, 800))
       const s = await fetch(`https://api.nano-gpt.com/api/tts/status?runId=${encodeURIComponent(data.runId)}&model=${encodeURIComponent(data.model || model)}`, {
         headers: { 'x-api-key': KEY },
       })
       const st = await s.json().catch(() => ({}))
-      if (st.status === 'completed' && st.audioUrl) return fetchAudio(st.audioUrl)
+      if (st.status === 'completed' && st.audioUrl) {
+        trace.steps.push(`queued, then made in ${((Date.now() - t0) / 1000).toFixed(1)}s (${i + 1} checks)`)
+        return fetchAudio(st.audioUrl)
+      }
       if (st.status === 'error') {
         const err = new Error(st.error || 'The voice service had a problem.')
         err.refused = /CONTENT_POLICY|policy|moderat|flagged/i.test(JSON.stringify(st))
         throw err
       }
     }
+    trace.steps.push(`gave up waiting after ${((Date.now() - t0) / 1000).toFixed(0)}s`)
     throw new Error('His voice took too long.')
   }
   throw new Error('The voice service sent something unexpected.')
@@ -184,7 +210,7 @@ export default async function handler(req, res) {
     }
 
     if (req.method === 'POST') {
-      const { text, settings, preview, clone, cloneStatus, deleteQwen, renameQwen } = req.body || {}
+      const { text, settings, preview, clone, cloneStatus, deleteQwen, renameQwen, live, backup } = req.body || {}
 
       // Make a new Qwen voice — from her uploaded clip, or from one of his current voices
       if (clone && typeof clone === 'object') {
@@ -228,11 +254,14 @@ export default async function handler(req, res) {
           voice: String(settings.voice || '').slice(0, 80),
           speed: Math.min(1.6, Math.max(0.6, Number(settings.speed) || 1)),
           instructions: String(settings.instructions || '').slice(0, 500),
+          backupVoice: String(settings.backupVoice || 'am_onyx').slice(0, 40), // Kokoro voice used if his voice fails
         }
         await setJSON(KEYS.voice, clean)
         return res.status(200).json({ ok: true })
       }
 
+      trace.steps = []
+      liveMode = !!live
       const words = speakable(text)
       if (!words) return res.status(200).json({ audio: null })
       if (!KEY) throw new Error('NANOGPT_API_KEY is not set in Vercel.')
@@ -244,22 +273,25 @@ export default async function handler(req, res) {
         // If his voice is just busy or slow, try it again (up to 3 times) — only a real refusal switches voice
         let audio, lastErr
         const reasons = []
-        for (let attempt = 0; attempt < 3 && !audio; attempt++) {
+        // On a call: once his voice has failed in this reply, go straight to the backup (no pause)
+        if (backup && v.model !== 'Kokoro-82m') throw Object.assign(new Error('using the backup voice for the rest of this reply'), { skipLog: true })
+        const tries = live ? 2 : 3 // on a call, one quick retry then the backup — no long silences
+        for (let attempt = 0; attempt < tries && !audio; attempt++) {
           try { audio = await tts(v, words) } catch (err) {
             lastErr = err
             reasons.push(err.message)
             if (err.refused || /balance|insufficient|credit|can’t be found/i.test(err.message)) break
-            await new Promise((r) => setTimeout(r, 700 * (attempt + 1)))
+            await new Promise((r) => setTimeout(r, live ? 300 : 700 * (attempt + 1)))
           }
         }
         if (!audio) { if (!preview) await noteProblem(v.model, reasons, words.length); throw lastErr }
         if (reasons.length && !preview) await noteProblem(v.model, [...reasons, 'worked on the next try'], words.length)
-        return res.status(200).json({ audio, voiceUsed: v.model })
+        return res.status(200).json({ audio, voiceUsed: v.model, trace: trace.steps })
       } catch (err) {
         // Chosen voice refused or failed → Kokoro (open-source, no filter) reads it instead
         if (v.model === 'Kokoro-82m') throw err
-        const audio = await tts({ ...DEFAULT_VOICE, speed: v.speed }, words)
-        return res.status(200).json({ audio, voiceUsed: 'Kokoro-82m', fellBack: true, reason: err.message })
+        const audio = await tts({ ...DEFAULT_VOICE, voice: v.backupVoice || 'am_onyx', speed: v.speed }, words)
+        return res.status(200).json({ audio, voiceUsed: 'Kokoro-82m', fellBack: true, reason: err.message, trace: trace.steps })
       }
     }
 
