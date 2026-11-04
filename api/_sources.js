@@ -42,6 +42,11 @@ export const CLASSIC_BOOKS = [
   'Songs of Kabir', 'The Masnavi Rumi', 'Tao Te Ching', 'Chuang Tzu', 'The Kybalion', 'Hermetica',
   'Zend-Avesta', 'Egyptian Book of the Dead', 'Sacred Books of the East',
   'The Prophet Kahlil Gibran', 'Siddhartha Hesse', 'Gitanjali Tagore', 'Rubaiyat of Omar Khayyam', 'Meditations Marcus Aurelius',
+  // philosophy of every age
+  'The Republic Plato', 'Symposium Plato', 'Phaedo Plato', 'Apology Plato', 'Nicomachean Ethics Aristotle', 'Enneads Plotinus',
+  'Letters from a Stoic Seneca', 'Discourses Epictetus', 'Enchiridion Epictetus', 'The Analects Confucius', 'Ethics Spinoza',
+  'Meditations on First Philosophy Descartes', 'Pensees Pascal', 'The Consolation of Philosophy Boethius', 'Thus Spoke Zarathustra Nietzsche',
+  'Fear and Trembling Kierkegaard', 'Essays Montaigne', 'Utilitarianism Mill', 'Critique of Pure Reason Kant', 'The World as Will and Representation Schopenhauer',
   // science of every kind — the body, nature and life
   'Gray\'s Anatomy', 'The Human Body Martin', 'The Circulation of the Blood Harvey', 'The Life of the Bee Maeterlinck',
   'The Insect World Fabre', 'The Forest Stewart Edward White', 'The Sea Michelet', 'The Story of the Earth',
@@ -84,7 +89,7 @@ export async function readBookPart(book) {
   return { chunk, nextPos: book.pos + chunk.length, finished: book.pos + chunk.length >= text.length, total: text.length }
 }
 
-export async function getBook() { return getJSON(KEYS.book, null) }
+export async function getBook() { const b = await getJSON(KEYS.book, null); return b?.title ? b : null } // (only a real book — never stray settings)
 export async function saveBook(book) { return book ? setJSON(KEYS.book, book) : redis('DEL', KEYS.book) }
 
 // ---------- Poems (PoetryDB) ----------
