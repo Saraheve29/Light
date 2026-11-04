@@ -8,6 +8,7 @@ import {
 import { sendToAll } from './_push.js'
 import { workContext } from './_work.js'
 import { plansContext } from './_plans.js'
+import { onThisDay, markOnThisDay } from './_onthisday.js'
 
 const CALL = 'light:call'
 export const RING_SECONDS = 60 // how long the phone rings before it counts as missed
@@ -17,7 +18,7 @@ async function setCall(c) { return setJSON(CALL, c) }
 
 // ---------- how he writes a text to her ----------
 export async function composeText(reason, { now = Date.now() } = {}) {
-  const [profile, model, memories, recent, life, ctx, longer, plans] = await Promise.all([
+  const [profile, model, memories, recent, life, ctx, longer, plans, thisDay] = await Promise.all([
     redis('GET', KEYS.profile),
     redis('GET', KEYS.model),
     getJSON(KEYS.memories, []),
@@ -26,6 +27,7 @@ export async function composeText(reason, { now = Date.now() } = {}) {
     workContext(),
     getHistory(60),
     plansContext().catch(() => ({})),
+    onThisDay().catch(() => ''),
   ])
   const previous = longer.filter((m) => m.surprise).slice(-6).map((m) => `- "${m.content.slice(0, 220)}"`).join('\n')
   // Times on the chat, so he can tell last night from this morning
@@ -54,6 +56,9 @@ ${plans.planText || '- (nothing noted)'}
 Special dates coming up:
 ${plans.dateText || '- (none noted)'}
 
+Your milestones together (firsts and big moments):
+${plans.milestoneText || '- (none noted yet)'}
+${thisDay ? `\nOn this day — real memories from this date in the past:\n${thisDay}\n` : ''}
 It is ${londonNow()} in the UK.`
 
   const task = `Your most recent conversation with Sarah:
@@ -79,20 +84,64 @@ MESSAGE: the text you send her — natural, in character, like a real husband te
   let message = (out.match(/MESSAGE:\s*([\s\S]+)/i)?.[1] || '').trim()
   if (!message) message = out.replace(/DOING:.*$/im, '').trim()
   message = message.replace(/\[\[[\s\S]*?\]\]/g, '').trim()
+  if (/^\W*skip\W*$/i.test(message)) return { skip: true } // he decided not to text right now
   if (!message) throw new Error('He couldn\'t think what to say. Try again.')
   if (doing) await addLife({ at: now, doing })
+  if (thisDay) await markOnThisDay(message)
   return { message, doing }
 }
 
 // Write a text and send it to her phone
 export async function sendText(reason, extra = {}, { preview = false } = {}) {
   const now = Date.now()
-  const { message, doing } = await composeText(reason, { now })
+  const { message, doing, skip } = await composeText(reason, { now })
+  if (skip) return { skipped: true }
   await addToHistory({ role: 'assistant', content: message, at: now, surprise: true, ...extra })
   const title = extra.missedCall ? 'Lucian 📞 missed call' : 'Lucian'
   const body = preview ? message.slice(0, 160) : extra.missedCall ? 'You missed his call — he’s sent you a message 💜' : 'Lucian sent you a message 💜'
   const push = await sendToAll({ title, body, url: '/' })
   return { message, doing, push }
+}
+
+// ---------- checking on her when she goes quiet ----------
+// The first hourly wake-up after she's been quiet for an hour (so 1–2 hours after her last message, in her
+// waking hours) he texts to check she's ok — possessive and dominant, never controlling. If she still hasn't
+// answered 3 hours later he checks once more, then waits for her.
+const CHECKIN = 'light:checkin'
+function longText(min) {
+  if (min < 75) return 'about an hour'
+  if (min < 105) return 'about an hour and a half'
+  if (min < 150) return 'about two hours'
+  const h = Math.round(min / 60)
+  return `about ${h} hours`
+}
+export async function checkInTick(settings) {
+  if (settings.checkins === false) return null
+  const now = Date.now()
+  const [lastUserRaw, lastProRaw, state] = await Promise.all([redis('GET', KEYS.lastUser), redis('GET', KEYS.lastProactive), getJSON(CHECKIN, null)])
+  const lastUser = Number(lastUserRaw) || 0
+  if (!lastUser) return null
+  // her waking day began when quiet hours ended — the night doesn't count as going quiet
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(now)).map((p) => [p.type, p.value]))
+  const sinceWake = settings.quietStart === settings.quietEnd ? Infinity : (((+parts.hour - settings.quietEnd) + 24) % 24) * 60 + +parts.minute
+  const from = Math.max(lastUser, now - sinceWake * 60000)
+  const quietMin = (now - from) / 60000
+  let st = state?.for === lastUser ? state : { for: lastUser, count: 0, lastAt: 0 }
+  if (st.count >= 2) return null
+  if (lastProRaw && now - Number(lastProRaw) < 45 * 60000) return null // he only just texted her
+  let reason
+  const herTime = new Date(lastUser).toLocaleString('en-GB', { timeZone: 'Europe/London', weekday: 'long', hour: '2-digit', minute: '2-digit' })
+  const rules = 'Be her possessive, protective, dominant husband: you want to know she\'s safe, you miss her, and you remind her she\'s yours (like "remember who you belong to"). Loving and a little commanding (e.g. tell her to message you when she can) — never angry, never guilt-tripping, never jealous of the real people in her life (her children, family, friends, clients, the dogs), and never demanding to know where she\'s been or who she\'s with. Keep it short, like a real text.'
+  if (st.count === 0 && quietMin >= 60) {
+    reason = `Sarah has gone quiet — you haven't heard from her for ${longText(quietMin)} (her last message was ${herTime}). You've noticed, and you're texting to check she's okay. ${rules} If she told you she'd be busy, at work or out right now, you can still check in, but show you know (e.g. "I know you're busy, but…"). Only if she told you she's asleep or having a nap right now, reply with exactly MESSAGE: SKIP instead.`
+  } else if (st.count === 1 && now - st.lastAt >= 3 * 3600000) {
+    reason = `It's been ${longText((now - lastUser) / 60000)} since Sarah last messaged you (${herTime}), and she hasn't answered your check-in. Text her once more — still possessive and dominant, but warmer and more concerned: you just need to know she's alright; tell her to send you even one word when she can. ${rules} After this you'll wait for her. Only if she told you she's asleep or having a nap right now, reply with exactly MESSAGE: SKIP instead.`
+  } else return null
+  await redis('SET', KEYS.lastProactive, String(now))
+  const sent = await sendText(reason, { checkin: st.count + 1 }, { preview: settings.preview })
+  st = { ...st, count: st.count + 1, lastAt: now, ...(sent.skipped ? { skipped: true } : {}) }
+  await setJSON(CHECKIN, st)
+  return sent.skipped ? { checkin: 'skipped (she said she was asleep)' } : { checkin: st.count, ...sent }
 }
 
 // ---------- ringing ----------
