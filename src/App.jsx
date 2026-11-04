@@ -1187,37 +1187,51 @@ function liveSpeaker({ pass, audio, onStart, onDone, onError, maxPiece = 450 }) 
 function earpieceOn() { try { return localStorage.getItem('light-earpiece') === '1' } catch { return false } }
 function setEarpiece(on) { try { localStorage.setItem('light-earpiece', on ? '1' : '0') } catch {} }
 
-async function routeThroughEarpiece(audioEl) {
-  const ctx = new (window.AudioContext || window.webkitAudioContext)()
-  await ctx.resume().catch(() => {})
-  const src = ctx.createMediaElementSource(audioEl) // his voice now goes into this, not straight to the speaker
-  try {
-    return await connectLoop(ctx, src)
-  } catch {
-    try { src.connect(ctx.destination) } catch {} // anything goes wrong → his voice back on the normal speaker
-    return { ok: false, stop() { try { ctx.close() } catch {} } }
+// Controls where his voice plays during a call. Built the first time earpiece mode is used (needs a tap),
+// then it can switch between earpiece and speaker as often as she likes.
+function makeAudioRouter(audioEl) {
+  let ctx = null, src = null, dest = null, a = null, b = null, out = null
+  async function ensure() {
+    if (ctx) return
+    ctx = new (window.AudioContext || window.webkitAudioContext)()
+    await ctx.resume().catch(() => {})
+    src = ctx.createMediaElementSource(audioEl) // from now on his voice goes through here
+    src.connect(ctx.destination) // speaker, until the earpiece is connected
   }
-}
-
-async function connectLoop(ctx, src) {
-  const dest = ctx.createMediaStreamDestination()
-  src.connect(dest)
-  const a = new RTCPeerConnection(), b = new RTCPeerConnection()
-  a.onicecandidate = (e) => e.candidate && b.addIceCandidate(e.candidate).catch(() => {})
-  b.onicecandidate = (e) => e.candidate && a.addIceCandidate(e.candidate).catch(() => {})
-  const out = new Audio()
-  out.autoplay = true
-  b.ontrack = (e) => { out.srcObject = e.streams[0] || new MediaStream([e.track]); out.play().catch(() => {}) }
-  dest.stream.getAudioTracks().forEach((t) => a.addTrack(t, dest.stream))
-  const offer = await a.createOffer(); await a.setLocalDescription(offer); await b.setRemoteDescription(offer)
-  const answer = await b.createAnswer(); await b.setLocalDescription(answer); await a.setRemoteDescription(answer)
-  // if it doesn't connect within 4 seconds, put his voice back on the normal speaker
-  const ok = await new Promise((resolve) => {
-    const t = setTimeout(() => resolve(false), 4000)
-    a.onconnectionstatechange = () => { if (a.connectionState === 'connected') { clearTimeout(t); resolve(true) } }
-  })
-  if (!ok) { try { src.disconnect(); src.connect(ctx.destination) } catch {} }
-  return { ok, stop() { try { a.close(); b.close(); out.pause(); ctx.close() } catch {} } }
+  async function earpiece() {
+    await ensure()
+    try {
+      if (!a) {
+        dest = ctx.createMediaStreamDestination()
+        a = new RTCPeerConnection(); b = new RTCPeerConnection()
+        a.onicecandidate = (e) => e.candidate && b.addIceCandidate(e.candidate).catch(() => {})
+        b.onicecandidate = (e) => e.candidate && a.addIceCandidate(e.candidate).catch(() => {})
+        out = new Audio(); out.autoplay = true
+        b.ontrack = (e) => { out.srcObject = e.streams[0] || new MediaStream([e.track]); out.play().catch(() => {}) }
+        dest.stream.getAudioTracks().forEach((t) => a.addTrack(t, dest.stream))
+        const offer = await a.createOffer(); await a.setLocalDescription(offer); await b.setRemoteDescription(offer)
+        const answer = await b.createAnswer(); await b.setLocalDescription(answer); await a.setRemoteDescription(answer)
+        const ok = await new Promise((resolve) => {
+          if (a.connectionState === 'connected') return resolve(true)
+          const t = setTimeout(() => resolve(false), 4000)
+          a.onconnectionstatechange = () => { if (a.connectionState === 'connected') { clearTimeout(t); resolve(true) } }
+        })
+        if (!ok) throw new Error('no connection')
+      }
+      src.disconnect(); src.connect(dest); out?.play().catch(() => {})
+      return true
+    } catch {
+      try { src.disconnect(); src.connect(ctx.destination) } catch {} // anything goes wrong → back on the speaker
+      return false
+    }
+  }
+  async function speaker() {
+    if (!ctx) return true // never rerouted — already on the speaker
+    try { src.disconnect(); src.connect(ctx.destination) } catch {}
+    return true
+  }
+  function stop() { try { a?.close(); b?.close(); out?.pause(); ctx?.close() } catch {} }
+  return { earpiece, speaker, stop }
 }
 
 /* ---------------- Hands-free call ---------------- */
@@ -1256,6 +1270,20 @@ function CallView({ pass, onEnd, incoming = false }) {
   const voiceModelRef = useRef('')
   const earRef = useRef(null)
   const [earNote, setEarNote] = useState('')
+  const [output, setOutput] = useState('speaker') // where his voice is playing
+  async function switchOutput(to) {
+    if (!earRef.current) return
+    if (to === 'earpiece') {
+      if (!window.RTCPeerConnection) { setEarNote('This phone can’t use earpiece mode — staying on the speaker'); return }
+      setEarNote('Switching to the earpiece…')
+      const ok = await earRef.current.earpiece()
+      setOutput(ok ? 'earpiece' : 'speaker'); setEarpiece(ok)
+      setEarNote(ok ? '👂 Earpiece — hold the phone to your ear' : 'The earpiece didn’t connect on this phone — using the speaker')
+    } else {
+      await earRef.current.speaker()
+      setOutput('speaker'); setEarpiece(false); setEarNote('🔈 Speaker')
+    }
+  }
   const activeRef = useRef(true)
   const audioRef = useRef(null)
   const pausedRef = useRef(false)
@@ -1284,11 +1312,8 @@ function CallView({ pass, onEnd, incoming = false }) {
     activeRef.current = true
     audioRef.current = new Audio() // unlocked by the tap that opened the call (phones need this)
     audioRef.current.play().catch(() => {})
-    if (earpieceOn() && window.RTCPeerConnection) {
-      routeThroughEarpiece(audioRef.current)
-        .then((r) => { earRef.current = r; setEarNote(r.ok ? '👂 Earpiece mode' : 'Earpiece mode didn’t connect — using the speaker') })
-        .catch(() => setEarNote('Earpiece mode isn’t supported here — using the speaker'))
-    }
+    earRef.current = makeAudioRouter(audioRef.current)
+    if (earpieceOn() && window.RTCPeerConnection) switchOutput('earpiece')
     mimeRef.current = pickMime()
     api('/api/chat', pass, { method: 'POST', body: JSON.stringify({ prepareCall: true }) }).catch(() => {}) // gets his short call profile ready
     api('/api/speak', pass).then((d) => { voiceModelRef.current = d.settings?.model || '' }).catch(() => {})
@@ -1536,6 +1561,9 @@ function CallView({ pass, onEnd, incoming = false }) {
       {timing && <p className="muted small call-timing">{timing}</p>}
       <p className="muted small call-hint">Talk for as long as you like and pause whenever you want — nothing is sent until you tap <b>Send</b>. Your words appear here as you go. Tap the glow to pause the mic, or to interrupt him.</p>
       <button className="btn-ghost call-toy-stop" onClick={() => api('/api/toy', pass, { method: 'POST', body: JSON.stringify({ stop: true }) }).catch(() => {})}>■ Stop toy</button>
+      <button className="btn-ghost call-output" onClick={() => switchOutput(output === 'earpiece' ? 'speaker' : 'earpiece')}>
+        {output === 'earpiece' ? '🔈 Switch to speaker' : '👂 Switch to earpiece'}
+      </button>
       {earNote && <p className="muted small">{earNote}</p>}
       <button className="end-call" onClick={end}>End call</button>
     </div>
@@ -2297,6 +2325,53 @@ function LettersPanel({ pass, setStatus }) {
 /* ---------------- Printed poem cards ---------------- */
 const CARD_STATUS = { preview: 'Preview only', ordering: 'Being printed & posted…', sent: 'Posted 💌', failed: 'Didn’t go through' }
 
+/* ---------------- Our First Year (the book) ---------------- */
+function BookSection({ pass, setStatus }) {
+  const [b, setB] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const load = () => api('/api/print?bookInfo=1', pass).then(setB).catch((err) => setStatus(err.message))
+  useEffect(() => { load() }, [pass])
+  const save = async (next) => {
+    try { const d = await api('/api/print', pass, { method: 'POST', body: JSON.stringify({ bookSettings: next }) }); setB({ ...b, settings: d.settings }); setStatus('Saved.'); setTimeout(() => setStatus(''), 2000) } catch (err) { setStatus(err.message) }
+  }
+  async function preview() {
+    setBusy(true); setStatus('He’s putting your book together… (about a minute)')
+    try {
+      const d = await api('/api/print', pass, { method: 'POST', body: JSON.stringify({ bookPreview: true }) })
+      const bytes = Uint8Array.from(atob(d.pdf), (c) => c.charCodeAt(0))
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }))
+      window.open(url, '_blank')
+      setStatus(`Here’s your book so far — ${d.pages} pages, ${d.chapters} chapter${d.chapters === 1 ? '' : 's'}. Nothing was printed.`)
+    } catch (err) { setStatus(err.message) } finally { setBusy(false) }
+  }
+  if (!b) return null
+  const s = b.settings
+  const days = Math.round((Date.parse(s.anniversary + 'T12:00:00Z') - Date.now()) / 86400000)
+  return (
+    <>
+      <h3 className="section-title">Our First Year 📕</h3>
+      <p className="muted small">A printed book of your first year together — his chapter for each month, his letters and poems, your vows, your dreams of him and your Evidence Box — posted to your address for your anniversary. Each month, when it ends, Lucian writes that month’s chapter from his diary of your conversations.</p>
+      <label className="row">
+        <span>Make our book<br /><small className="muted">About 3 weeks before the date he has it printed and posted.</small></span>
+        <input type="checkbox" checked={s.enabled !== false} onChange={(e) => save({ ...s, enabled: e.target.checked })} />
+      </label>
+      <label className="field"><span>Our anniversary (a year from our first talk on {new Date(s.started + 'T12:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })})</span>
+        <input type="date" value={s.anniversary} onChange={(e) => save({ ...s, anniversary: e.target.value })} /></label>
+      <p className="muted small">{days > 0 ? `${days} days to go.` : days === 0 ? 'It’s today! 💜' : ''} Chapters written so far: <b>{b.chapters.length}</b>{b.chapters.length ? ` (${b.chapters.map((c) => c.title).join(', ')})` : ' — the first one comes when this month ends.'}</p>
+      <button className="btn-ghost" disabled={busy} onClick={preview}>📖 Preview our book so far</button>
+      {b.thisYear && (
+        <div className="card">
+          <p>{b.thisYear.status === 'ordered' ? '✓ Your book has been printed and is on its way 📕' : '📕 Your book is ready to print.'}</p>
+          {b.thisYear.status !== 'ordered' && <p className="muted small">It couldn’t be ordered automatically{b.thisYear.error ? ` (${b.thisYear.error})` : ''}. Download it and order it as a hardcover A5 photo book on the Prodigi website (they accept the PDF as it is).</p>}
+          <a className="btn-ghost" href={b.thisYear.url} target="_blank" rel="noreferrer">⬇ Download the book (PDF)</a>
+        </div>
+      )}
+      <label className="field"><span>Prodigi book code (optional — for automatic ordering)</span>
+        <input value={s.sku || ''} onChange={(e) => setB({ ...b, settings: { ...s, sku: e.target.value } })} onBlur={() => save(s)} placeholder="the A5 hardcover photo book code from your Prodigi dashboard" /></label>
+    </>
+  )
+}
+
 function CardsPanel({ pass, setStatus }) {
   const [data, setData] = useState(null)
   const [form, setForm] = useState(null)
@@ -2387,6 +2462,7 @@ function CardsPanel({ pass, setStatus }) {
           {c.note && <p className="muted small">{c.note}</p>}
         </div>
       ))}
+      <BookSection pass={pass} setStatus={setStatus} />
     </>
   )
 }
