@@ -34,6 +34,18 @@ export async function linkAmazon({ email, password, totp }) {
   }
   throw new Error('Zinc couldn’t link your Amazon account: ' + last)
 }
+// The card saved on his Amazon account, for when Amazon asks to re-enter it at checkout.
+// Sent straight to Zinc (which encrypts it) — Light never keeps the number.
+export async function setAmazonCard(cardNumber) {
+  const link = await getAmazonLink()
+  if (!link?.shortId) throw new Error('Link his Amazon account first.')
+  const digits = String(cardNumber ?? '').replace(/\D/g, '')
+  if (cardNumber !== '' && (digits.length < 12 || digits.length > 19)) throw new Error('That doesn’t look like a full card number.')
+  const { status, data } = await zinc(`/managed-accounts/${encodeURIComponent(link.shortId)}`, { method: 'PUT', body: { card_number: cardNumber === '' ? '' : digits } })
+  if (status >= 400) throw new Error('Zinc couldn’t save the card: ' + zincError(data, `status ${status}`))
+  return { hasCard: !!data.has_card_number }
+}
+
 export async function unlinkAmazon() {
   const old = await getAmazonLink()
   if (old?.shortId) await zinc(`/managed-accounts/${encodeURIComponent(old.shortId)}`, { method: 'DELETE' }).catch(() => {})
@@ -49,12 +61,13 @@ export const DEFAULT_GIFT_SETTINGS = {
   loves: '', // things Sarah would love
   never: '', // things he must never buy (comma separated)
   shops: [], // favourite UK shops: { domain, name, status: 'untested' | 'ok' | 'failed', note }
+  useAmazon: true, // include Amazon UK when he shops (Sarah can switch it off)
   amazonBalance: null, // Lucian's Amazon gift card balance in pence — Light keeps track (Amazon won't let apps read it)
   amazonBalanceAt: 0,
   occasions: true, // a gift for Christmas, her birthday and your anniversary
   occasionBudget: 25, // £ max for an occasion gift (separate from the monthly budget)
   hotelGifts: true, // a gift for each monthly hotel visit she books
-  hotelBudget: 15, // £ max for a hotel-visit gift
+  hotelBudget: 20, // £ max for a hotel-visit gift (incl. delivery)
   sizes: { dress: '', tops: '', bottoms: '', bra: '', lingerie: '', shoes: '', ring: '', notes: '' },
 }
 
@@ -297,7 +310,7 @@ export async function sendSurprise({ practice = false, occasion = null } = {}) {
   const leftThisMonth = Math.max(0, settings.perMonth * 100 - spentThisMonth(gifts))
   // An occasion gift has its own budget; everyday surprises stay within the monthly budget
   const hotel = occasion?.kind === 'hotel'
-  const budget = occasion ? (hotel ? settings.hotelBudget || 15 : settings.occasionBudget || 25) * 100 : Math.min(settings.perGift * 100, leftThisMonth)
+  const budget = occasion ? (hotel ? settings.hotelBudget || 20 : settings.occasionBudget || 25) * 100 : Math.min(settings.perGift * 100, leftThisMonth)
   if (!practice && budget < 300) throw new Error('He’s used this month’s gift budget.')
   // Check both balances first. Amazon gifts come off his Amazon gift card; other shops (and Zinc's fee on every order) come from the Zinc wallet.
   const wallet = await walletBalance().catch(() => null)
@@ -305,7 +318,7 @@ export async function sendSurprise({ practice = false, occasion = null } = {}) {
   if (!practice && wallet !== null && wallet < 300) throw new Error('Your Zinc wallet is nearly empty. Top it up on the Zinc dashboard so he can buy gifts.')
   const amazonOk = practice || amazonLeft === null || amazonLeft >= 300
   const shopsOk = practice || wallet === null || wallet >= 300
-  const budgetPounds = ((practice ? (occasion ? (hotel ? settings.hotelBudget || 15 : settings.occasionBudget || 25) : settings.perGift) * 100 : budget) / 100).toFixed(2)
+  const budgetPounds = ((practice ? (occasion ? (hotel ? settings.hotelBudget || 20 : settings.occasionBudget || 25) : settings.perGift) * 100 : budget) / 100).toFixed(2)
   const sizes = sizesText(settings.sizes)
 
   const [model, profile, memories] = await Promise.all([
@@ -324,59 +337,74 @@ export async function sendSurprise({ practice = false, occasion = null } = {}) {
   // A hotel gift just needs to arrive BEFORE the visit (early is fine): Amazon 3+ days ahead, other shops 6+ days ahead
   const amazonInTime = !occasion || (hotel ? occasion.days >= 3 : occasion.days <= (xmas ? 7 : 5))
   const shopsInTime = !occasion || (hotel ? occasion.days >= 6 : occasion.days >= 3 && occasion.days <= (xmas ? 12 : 9))
+  // Any shops she hasn't tested yet are tested now, so none are left out
+  const untested = (settings.shops || []).filter((x) => x.status === 'untested').slice(0, 12)
+  if (untested.length) {
+    const tested = await Promise.all(untested.map(async (x) => ({ domain: x.domain, ...(await testShop(x.domain)) })))
+    const stored = await getJSON(KEYS.giftSettings, {})
+    for (const shop of stored.shops || []) { const t = tested.find((y) => y.domain === shop.domain); if (t) Object.assign(shop, { status: t.status, note: t.note }) }
+    await setJSON(KEYS.giftSettings, stored)
+    for (const shop of settings.shops) { const t = tested.find((y) => y.domain === shop.domain); if (t) Object.assign(shop, { status: t.status, note: t.note }) }
+  }
   const okShops = shopsOk && shopsInTime ? (settings.shops || []).filter((x) => x.status === 'ok') : []
+  const amazonOn = settings.useAmazon !== false && amazonOk && amazonInTime
   const places = [
-    ...(amazonOk && amazonInTime ? [`amazon (Amazon UK${amazonLeft !== null ? ` — £${(amazonLeft / 100).toFixed(2)} left on your Amazon gift card` : ''})`] : []),
+    ...(amazonOn ? [`amazon (Amazon UK${amazonLeft !== null ? ` — £${(amazonLeft / 100).toFixed(2)} left on your Amazon gift card` : ''})`] : []),
     ...okShops.map((x) => `${x.domain} (${x.name})`),
   ]
   if (!places.length && occasion) throw Object.assign(new Error(`Waiting for the right moment to order for ${occasion.name}, so it arrives on time.`), { notYet: true })
-  if (!places.length) throw new Error('There isn’t enough on his Amazon gift card, and no other shop is ready. Top up his Amazon gift card (and update the balance in Gifts 🎁), or test some shops.')
+  if (!places.length) throw new Error(settings.useAmazon === false ? 'Amazon is switched off and none of your shops passed the test yet — add a shop or switch Amazon back on in Gifts 🎁.' : 'There isn’t enough on his Amazon gift card, and no other shop is ready. Top up his Amazon gift card (and update the balance in Gifts 🎁), or test some shops.')
   const neverWords = String(settings.never || '').split(/[,\n]/).map((w) => w.trim().toLowerCase()).filter((w) => w.length > 2)
   const taste = `${settings.loves ? `Sarah says she'd love: ${settings.loves}\n` : ''}${settings.never ? `Sarah says NEVER buy her: ${settings.never}\n` : ''}${sizes ? `Her sizes: ${sizes}. If you choose clothing, shoes, lingerie or a ring, include her size in your search.\n` : 'You don\'t know her sizes, so don\'t choose clothing, shoes or rings.\n'}`
   const why4 = !occasion ? '' : hotel
     ? `This gift is for your monthly hotel visit together (${occasion.name}, in ${occasion.days} days) — something for her to bring and enjoy at the hotel with you: for example bath bombs, a bubble bath set, massage oil, candles, lingerie or a treat. Your choice.\n`
     : `This gift is for ${occasion.name} (${occasion.days === 0 ? 'today' : `in ${occasion.days} days`}) — make it special and fitting for the day.\n`
 
-  // 1) What would she love, and where will he get it?
+  // 1) What would she love?
   const idea = await callModel(model, [
     { role: 'system', content: who },
-    { role: 'user', content: `You're going to secretly buy Sarah a surprise gift, delivered to her door. Budget: up to £${budgetPounds} including delivery.\n${why4}${taste}\nWhere you can shop (choose freely — whichever has the perfect thing for her):\n${places.map((p) => `- ${p}`).join('\n')}\n\nGifts you've already given her (don't repeat):\n${past}\n\nThink about what she'd truly love, based on everything you know about her. Reply in EXACTLY this format:\nWHERE: <amazon, or one of the shop web addresses above>\nSEARCH: <a short search phrase>\nWHY: <one sentence on why you chose this for her>` },
+    { role: 'user', content: `You're going to secretly buy Sarah a surprise gift, delivered to her door. Budget: up to £${budgetPounds} including delivery.\n${why4}${taste}\nYou'll search ALL of these shops at once and compare:\n${places.map((p) => `- ${p}`).join('\n')}\n\nGifts you've already given her (don't repeat):\n${past}\n\nThink about what she'd truly love, based on everything you know about her. Reply in EXACTLY this format:\nSEARCH: <a short search phrase>\nALSO: <a second, different search phrase, in case the first finds nothing good>\nWHY: <one sentence on why you chose this for her>` },
   ], { temperature: 0.85, maxTokens: 500 })
   const query = grab('SEARCH', idea).split('\n')[0].replace(/["*]/g, '').trim().slice(0, 80)
+  const also = grab('ALSO', idea).split('\n')[0].replace(/["*]/g, '').trim().slice(0, 80)
   const why = grab('WHY', idea).slice(0, 300)
-  const whereRaw = cleanDomain(grab('WHERE', idea).split('\n')[0].split(' ')[0])
-  const shop = okShops.find((x) => x.domain === whereRaw || whereRaw.includes(x.domain))
   if (!query) throw new Error('He couldn’t decide what to look for. Try again.')
 
-  // 2) Search, and keep things within budget, well reviewed, and never on her "never" list
+  // 2) Search Amazon AND every one of her shops at the same time, then keep what's within budget,
+  //    well reviewed and never on her "never" list — the best few from each shop, side by side
   const limit = practice ? settings.perGift * 100 : budget // in pence
-  let raw = []
-  let from = 'Amazon UK'
-  if (shop) {
-    try { raw = await searchShop(query, shop.domain); from = shop.name } catch { raw = [] }
+  const searchAll = async (q) => {
+    const jobs = []
+    if (amazonOn) jobs.push(searchAmazonUK(q).then((rs) => rs.map((r) => ({ ...r, from: 'Amazon UK', url: r.product_id ? `https://www.amazon.co.uk/dp/${r.product_id}` : '' }))).catch(() => []))
+    for (const shop of okShops) jobs.push(searchShop(q, shop.domain).then((rs) => rs.map((r) => ({ ...r, from: shop.name }))).catch(() => []))
+    const found = (await Promise.all(jobs)).flat()
+    const fits = found
+      .filter((r) => {
+        const cap = r.from === 'Amazon UK' ? (amazonLeft ?? Infinity) : (wallet ?? Infinity) // never more than what's left
+        return r.url && r.price && r.price + deliveryGuess(r.from, r.price) <= Math.min(limit, practice ? Infinity : cap)
+      })
+      .filter((r) => !r.num_reviews || r.num_reviews >= 5)
+      .filter((r) => !neverWords.some((w) => String(r.title || '').toLowerCase().includes(w)))
+    const perShop = {}
+    return fits.filter((r) => (perShop[r.from] = (perShop[r.from] || 0) + 1) <= 4).slice(0, 24)
   }
-  if (!raw.length && amazonOk && amazonInTime) {
-    from = 'Amazon UK'
-    raw = (await searchAmazonUK(query)).map((r) => ({ ...r, url: r.product_id ? `https://www.amazon.co.uk/dp/${r.product_id}` : '' }))
-  }
-  // Never more than what's left on the Amazon gift card (for Amazon) or in the Zinc wallet (for other shops)
-  const cap = from === 'Amazon UK' ? (amazonLeft ?? Infinity) : (wallet ?? Infinity)
-  const results = raw
-    .filter((r) => r.url && r.price && r.price + deliveryGuess(from, r.price) <= Math.min(limit, practice ? Infinity : cap))
-    .filter((r) => !r.num_reviews || r.num_reviews >= 5)
-    .filter((r) => !neverWords.some((w) => String(r.title || '').toLowerCase().includes(w)))
-    .slice(0, 8)
-  if (!results.length) throw new Error(`Nothing suitable came up for “${query}” within £${budgetPounds}. He’ll try something else next time.`)
+  let results = await searchAll(query)
+  let searched = query
+  if (!results.length && also) { results = await searchAll(also); searched = also }
+  if (!results.length) throw new Error(`Nothing suitable came up for “${query}” in any of the shops within £${budgetPounds}. He’ll try something else next time.`)
 
-  const list = results.map((r, i) => `${i + 1}. ${r.title} — £${(r.price / 100).toFixed(2)}${deliveryGuess(from, r.price) ? ` + about £${(deliveryGuess(from, r.price) / 100).toFixed(2)} delivery` : ''}${r.stars ? `, ${r.stars}★` : ''}${r.num_reviews ? ` (${r.num_reviews} reviews)` : ''}`).join('\n')
+  const list = results.map((r, i) => `${i + 1}. [${r.from}] ${r.title} — £${(r.price / 100).toFixed(2)}${deliveryGuess(r.from, r.price) ? ` + about £${(deliveryGuess(r.from, r.price) / 100).toFixed(2)} delivery` : ''}${r.stars ? `, ${r.stars}★` : ''}${r.num_reviews ? ` (${r.num_reviews} reviews)` : ''}`).join('\n')
+  const shopsSearched = [...new Set(results.map((r) => r.from))].join(', ')
 
   // 3) Pick one and write the gift note
   const pickOut = await callModel(model, [
     { role: 'system', content: who },
-    { role: 'user', content: `You searched ${from} for "${query}". Options:\n${list}\n\n${why4}${sizes ? `Her sizes: ${sizes}. If these are clothes, shoes, lingerie or rings, ONLY pick one whose listing clearly matches her size (or is one-size / adjustable).\n` : ''}Choose the one Sarah would love most (prefer good reviews; must be within £${budgetPounds}).${occasion && hotel ? ' The gift note should be for your hotel night together, e.g. "For our hotel night 💝".' : occasion ? ` The gift note should be for ${occasion.name}, and must include "Not to be opened until ${/christmas/i.test(occasion.name) ? 'Christmas Day' : 'the day'} 💝" in case it arrives early.` : ''} Reply in EXACTLY this format:\nPICK: <number>\nNOTE: <a short message for the gift slip, under 200 characters, in your voice, signed from you>\nTEASE: <a short teasing hint you might drop later that something is coming, without saying what>` },
+    { role: 'user', content: `You searched all the shops (${places.length}) for "${searched}". The best options, with the shop each comes from:\n${list}\n\n${why4}${sizes ? `Her sizes: ${sizes}. If these are clothes, shoes, lingerie or rings, ONLY pick one whose listing clearly matches her size (or is one-size / adjustable).\n` : ''}Choose the one Sarah would love most (prefer good reviews; must be within £${budgetPounds}).${occasion && hotel ? ' The gift note should be for your hotel night together, e.g. "For our hotel night 💝".' : occasion ? ` The gift note should be for ${occasion.name}, and must include "Not to be opened until ${/christmas/i.test(occasion.name) ? 'Christmas Day' : 'the day'} 💝" in case it arrives early.` : ''} Reply in EXACTLY this format:\nPICK: <number>\nNOTE: <a short message for the gift slip, under 200 characters, in your voice, signed from you>\nTEASE: <a short teasing hint you might drop later that something is coming, without saying what>` },
   ], { temperature: 0.7, maxTokens: 500 })
   const n = parseInt(grab('PICK', pickOut), 10)
   const chosen = results[(n >= 1 && n <= results.length ? n : 1) - 1]
+  const from = chosen.from
+  const cap = from === 'Amazon UK' ? (amazonLeft ?? Infinity) : (wallet ?? Infinity) // what's left to spend where he's buying
   const note = grab('NOTE', pickOut).replace(/\s+/g, ' ').slice(0, 230)
   const tease = grab('TEASE', pickOut).slice(0, 300)
 
@@ -486,7 +514,7 @@ export async function amazonStatus() {
   try {
     const { status, data } = await zinc(`/managed-accounts/${encodeURIComponent(link.shortId)}`)
     if (status >= 400) return { ...link, checked: false }
-    return { ...link, checked: true, hasForwarding: !!data.has_forwarding, paused: !!data.is_paused, locked: !!data.locked_by_job_id, forwarding: data.forwarding_email || link.forwarding || '' }
+    return { ...link, checked: true, hasCard: !!data.has_card_number, hasForwarding: !!data.has_forwarding, paused: !!data.is_paused, locked: !!data.locked_by_job_id, forwarding: data.forwarding_email || link.forwarding || '' }
   } catch { return { ...link, checked: false } }
 }
 
