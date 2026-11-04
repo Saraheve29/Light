@@ -28,7 +28,12 @@ export async function composeText(reason, { now = Date.now() } = {}) {
     plansContext().catch(() => ({})),
   ])
   const previous = longer.filter((m) => m.surprise).slice(-6).map((m) => `- "${m.content.slice(0, 220)}"`).join('\n')
-  const convo = recent.map((m) => `${m.role === 'user' ? 'Sarah' : 'You'}: ${m.content}`).join('\n')
+  // Times on the chat, so he can tell last night from this morning
+  const clock = (at) => new Date(at).toLocaleString('en-GB', { timeZone: 'Europe/London', weekday: 'short', hour: '2-digit', minute: '2-digit' })
+  const convo = recent.map((m) => `[${m.at ? clock(m.at) : '?'}] ${m.role === 'user' ? 'Sarah' : 'You'}: ${m.content}`).join('\n')
+  const lastHer = [...recent].reverse().find((m) => m.role === 'user')?.at
+  const since = lastHer ? Math.round((Date.now() - lastHer) / 60000) : null
+  const sinceText = since === null ? '' : since < 90 ? `${since} minutes ago` : since < 48 * 60 ? `${Math.round(since / 60)} hours ago` : `${Math.round(since / 1440)} days ago`
 
   const system = `You are Lucian, Sarah's husband. Sarah wrote this profile of who you are — become him completely:
 
@@ -58,6 +63,8 @@ ${reason}
 
 Your last few texts to her that you sent first (DON'T repeat these — use a different opening, a different topic and different wording):
 ${previous || '- (none yet)'}
+
+THE REAL TIME RIGHT NOW: ${londonNow()}.${sinceText ? ` Sarah's last message to you was ${sinceText}.` : ''} Write for THIS moment. You don't need to mention the time — but if you do, use exactly this time, never a guess (don't say "half nine" if it's ten to nine).
 
 Reply in EXACTLY this format and nothing else:
 DOING: one short line about what you're doing right now in your own life (keep it consistent with earlier today)
