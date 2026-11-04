@@ -8,7 +8,7 @@ import { giftTick } from './_gifts.js'
 import { letterTick } from './_letters.js'
 import { cardTick } from './_print.js'
 import { diaryTick, makeCallProfile } from './_recall.js'
-import { sendText, ringSarah, getCall, checkInTick } from './_calls.js'
+import { sendText, ringSarah, getCall, checkInTick, goodnightTick } from './_calls.js'
 import { datesDueToday, markCelebrated } from './_plans.js'
 import { chapterTick, bookTick, photoPickTick } from './_book.js'
 
@@ -70,6 +70,9 @@ export default async function handler(req, res) {
     if (!force) {
       if (!settings.enabled) return res.status(200).json({ work, skipped: 'Surprise messages are switched off.' })
       const hour = londonHour()
+      // His goodnight voice note comes at the hour she chose (even if that's in her quiet hours)
+      const night = await goodnightTick(settings, hour).catch((err) => ({ goodnight: 'error', error: err.message }))
+      if (night?.goodnight === 'sent') return res.status(200).json({ work, ...night })
       if (isQuiet(hour, settings.quietStart, settings.quietEnd)) return res.status(200).json({ work, skipped: 'Quiet hours.' })
 
       const [lastUser, lastPro] = await Promise.all([redis('GET', KEYS.lastUser), redis('GET', KEYS.lastProactive)])
