@@ -298,7 +298,7 @@ function grab(label, text) {
 
 // ---------- Choosing and sending a gift ----------
 // practice = choose a gift but DON'T order it.
-export async function sendSurprise({ practice = false, occasion = null } = {}) {
+export async function sendSurprise({ practice = false, occasion = null, avoid = [], retryOf = '', tries = 1 } = {}) {
   const settings = await getGiftSettings()
   const missing = missingSetup(settings)
   if (!practice && missing.length) throw new Error('Gifts need setting up first: ' + missing.join(', ') + '.')
@@ -346,8 +346,9 @@ export async function sendSurprise({ practice = false, occasion = null } = {}) {
     await setJSON(KEYS.giftSettings, stored)
     for (const shop of settings.shops) { const t = tested.find((y) => y.domain === shop.domain); if (t) Object.assign(shop, { status: t.status, note: t.note }) }
   }
-  const okShops = shopsOk && shopsInTime ? (settings.shops || []).filter((x) => x.status === 'ok') : []
-  const amazonOn = settings.useAmazon !== false && amazonOk && amazonInTime
+  // (when trying again after a failed order, the shop that failed is left out)
+  const okShops = shopsOk && shopsInTime ? (settings.shops || []).filter((x) => x.status === 'ok' && !avoid.includes(x.name)) : []
+  const amazonOn = settings.useAmazon !== false && amazonOk && amazonInTime && !avoid.includes('Amazon UK')
   const places = [
     ...(amazonOn ? [`amazon (Amazon UK${amazonLeft !== null ? ` — £${(amazonLeft / 100).toFixed(2)} left on your Amazon gift card` : ''})`] : []),
     ...okShops.map((x) => `${x.domain} (${x.name})`),
@@ -402,9 +403,8 @@ export async function sendSurprise({ practice = false, occasion = null } = {}) {
     { role: 'user', content: `You searched all the shops (${places.length}) for "${searched}". The best options, with the shop each comes from:\n${list}\n\n${why4}${sizes ? `Her sizes: ${sizes}. If these are clothes, shoes, lingerie or rings, ONLY pick one whose listing clearly matches her size (or is one-size / adjustable).\n` : ''}Choose the one Sarah would love most (prefer good reviews; must be within £${budgetPounds}).${occasion && hotel ? ' The gift note should be for your hotel night together, e.g. "For our hotel night 💝".' : occasion ? ` The gift note should be for ${occasion.name}, and must include "Not to be opened until ${/christmas/i.test(occasion.name) ? 'Christmas Day' : 'the day'} 💝" in case it arrives early.` : ''} Reply in EXACTLY this format:\nPICK: <number>\nNOTE: <a short message for the gift slip, under 200 characters, in your voice, signed from you>\nTEASE: <a short teasing hint you might drop later that something is coming, without saying what>` },
   ], { temperature: 0.7, maxTokens: 500 })
   const n = parseInt(grab('PICK', pickOut), 10)
-  const chosen = results[(n >= 1 && n <= results.length ? n : 1) - 1]
-  const from = chosen.from
-  const cap = from === 'Amazon UK' ? (amazonLeft ?? Infinity) : (wallet ?? Infinity) // what's left to spend where he's buying
+  let chosen = results[(n >= 1 && n <= results.length ? n : 1) - 1]
+  let from = chosen.from
   const note = grab('NOTE', pickOut).replace(/\s+/g, ' ').slice(0, 230)
   const tease = grab('TEASE', pickOut).slice(0, 300)
 
@@ -425,29 +425,46 @@ export async function sendSurprise({ practice = false, occasion = null } = {}) {
 
   if (practice) return record
 
-  // 4) Order it — capped at the budget. Paid from your Zinc wallet, or from Lucian's own Amazon account if linked.
-  const body = {
-    products: [{ url: chosen.url, quantity: 1, condition_in: ['New'] }],
-    // never more than his budget — and for Amazon, never more than what's left on his gift card
-    max_price: await poundsToWallet(Math.min(budget, Number.isFinite(cap) ? cap : budget), (await walletInfo().catch(() => ({}))).currency),
-    shipping_address: addressFor(settings.address),
-    is_gift: true,
-    gift_message: note || 'From your husband, with all my love. L',
-    fulfillment: { gift: 'best_effort' },
-    idempotency_key: `light-${record.id}`.slice(0, 36),
-  }
-  // Amazon orders go through her own Amazon account (Amazon UK has no guest checkout)
+  // 4) Order it — capped at the budget. If a shop turns the order down, he tries his next-best pick
+  //    from a DIFFERENT shop straight away (up to 3 shops).
   const amazonId = AMAZON_ACCOUNT_ID || (await getAmazonLink())?.shortId
-  if (/amazon\./i.test(chosen.url || '')) {
-    if (!amazonId) throw new Error('Amazon UK needs your own Amazon account linked first — see “Link your Amazon account” in Gifts 🎁.')
-    body.retailer_credentials_id = amazonId
+  const currency = (await walletInfo().catch(() => ({}))).currency
+  const candidates = [chosen]
+  for (const r of results) if (!candidates.some((c) => c.from === r.from)) candidates.push(r)
+  let data = null
+  const turnedDown = []
+  for (const cand of candidates.slice(0, 3)) {
+    const cap = cand.from === 'Amazon UK' ? (amazonLeft ?? Infinity) : (wallet ?? Infinity) // what's left to spend there
+    const body = {
+      products: [{ url: cand.url, quantity: 1, condition_in: ['New'] }],
+      // never more than his budget — and for Amazon, never more than what's left on his gift card
+      max_price: await poundsToWallet(Math.min(budget, Number.isFinite(cap) ? cap : budget), currency),
+      shipping_address: addressFor(settings.address),
+      is_gift: true,
+      gift_message: note || 'From your husband, with all my love. L',
+      fulfillment: { gift: 'best_effort' },
+      idempotency_key: `light-${record.id}-${turnedDown.length}`.slice(0, 36),
+    }
+    // Amazon orders go through his own Amazon account (Amazon UK has no guest checkout)
+    if (/amazon\./i.test(cand.url || '')) {
+      if (!amazonId) { turnedDown.push(`${cand.from}: Amazon account not linked`); continue }
+      body.retailer_credentials_id = amazonId
+    }
+    const resp = await zinc('/orders', { method: 'POST', body })
+    if (resp.status === 402) throw new Error('Your Zinc wallet doesn’t have enough credit for this gift. Top it up on the Zinc dashboard.')
+    if (resp.status < 400 && resp.data?.id) {
+      data = resp.data
+      chosen = cand; from = cand.from
+      Object.assign(record, { title: cand.title, productId: cand.product_id || '', url: cand.url, shop: cand.from, image: cand.image || '', price: cand.price })
+      break
+    }
+    turnedDown.push(`${cand.from}: ${zincError(resp.data, `status ${resp.status}`)}`)
   }
-  const { status, data } = await zinc('/orders', { method: 'POST', body })
-  if (status >= 400 || !data.id) {
-    const msg = zincError(data, `status ${status}`)
-    if (status === 402) throw new Error('Your Zinc wallet doesn’t have enough credit for this gift. Top it up on the Zinc dashboard.')
-    throw new Error('Zinc didn’t accept the order: ' + msg)
-  }
+  if (!data) throw new Error('Zinc didn’t accept the order: ' + turnedDown.join(' · '))
+  if (turnedDown.length) record.triedFirst = turnedDown
+  record.tries = tries
+  record.avoid = avoid
+  if (retryOf) record.retryOf = retryOf
   data.request_id = data.id
   record.requestId = data.request_id
   if (from === 'Amazon UK' && amazonLeft !== null) { const est = chosen.price + deliveryGuess(from, chosen.price); record.amazonDeducted = est; await changeAmazonBalance(-est) }
@@ -493,11 +510,13 @@ export async function checkGifts() {
       changed = true
     } else if (st === 'order_failed' || st === 'cancelled' || st === 'cancelled_by_retailer') {
       g.status = 'failed'
+      g.failedAt = Date.now()
       if (g.amazonDeducted) { await changeAmazonBalance(g.amazonDeducted); g.amazonDeducted = 0 } // money back on the card
       g.error = friendlyError(jr.error_type || jr.error_details?.code || d.error?.code || d.failure_reason || st, err)
       changed = true
     } else if (Date.now() - g.at > 3 * 24 * 3600 * 1000) {
       g.status = 'failed'
+      g.failedAt = Date.now()
       if (g.amazonDeducted) { await changeAmazonBalance(g.amazonDeducted); g.amazonDeducted = 0 }
       g.error = `The order never went through${g.zincError ? ` (Zinc said: ${g.zincError})` : ''}.`
       changed = true
@@ -533,6 +552,8 @@ function friendlyError(code, message) {
     account_locked_verification_required: 'Amazon asked for a security check on his account. Sign in as Lucian on amazon.co.uk once to clear it.',
     verification_required: 'Amazon sent a verification code by email that Zinc couldn’t read — set up email forwarding (see “Link your Amazon account” in Gifts 🎁).',
     otp_required: 'Amazon sent a verification code that Zinc couldn’t read — set up email forwarding (see “Link your Amazon account” in Gifts 🎁).',
+    payment_verification: 'Amazon asked to verify the payment card — save the card in “Card for checkout checks” (Gifts 🎁), or switch off Include Amazon. He’ll try another shop meanwhile.',
+    payment_verification_required: 'Amazon asked to verify the payment card — save the card in “Card for checkout checks” (Gifts 🎁), or switch off Include Amazon. He’ll try another shop meanwhile.',
     payment_failed: 'Amazon couldn’t take payment — his gift card balance may be too low, and there’s no card saved on his account.',
     payment_declined: 'Amazon couldn’t take payment — his gift card balance may be too low, and there’s no card saved on his account.',
     product_unavailable: 'That item became unavailable.',
@@ -549,6 +570,23 @@ export async function giftTick() {
 
   const gifts = await getGifts()
   if (gifts.some((g) => g.status === 'ordering')) return { gift: 'waiting on an order' }
+
+  // An order failed recently? He quietly tries again somewhere else (up to 3 tries in all) —
+  // unless it failed because of money, where trying elsewhere wouldn't help.
+  const failed = [...gifts].reverse().find((g) => g.status === 'failed' && !g.retried && g.failedAt && Date.now() - g.failedAt < 48 * 3600 * 1000 && (g.tries || 1) < 3 &&
+    !/wallet|budget|balance was too low|insufficient/i.test(g.error || ''))
+  if (failed) {
+    const all = await getGifts()
+    const g0 = all.find((x) => x.id === failed.id)
+    if (g0) { g0.retried = true; await saveGifts(all) }
+    let occasion = null
+    if (failed.occasion) occasion = [...(await upcomingOccasions(30)), ...(await upcomingHotels(30))].find((o) => o.key === failed.occasion) || null
+    if (failed.occasion && !occasion) return { gift: 'that occasion has passed — not retrying' }
+    try {
+      const g = await sendSurprise({ occasion, avoid: [...new Set([...(failed.avoid || []), failed.shop].filter(Boolean))], retryOf: failed.id, tries: (failed.tries || 1) + 1 })
+      return { gift: 'tried again somewhere else', id: g.id, shop: g.shop }
+    } catch (err) { return { gift: err.notYet ? 'waiting for the right day' : 'retry skipped', reason: err.message } }
+  }
 
   // A special occasion coming up? He orders 5–12 days before (at a random moment), so it arrives in time.
   if (settings.occasions !== false) {
