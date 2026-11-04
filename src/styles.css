@@ -304,3 +304,4 @@ textarea.vows { font-family: var(--serif); font-size: 19px; line-height: 1.6; mi
 .hear-btn { margin-left: 2px; }
 .balance-card { text-align: center; padding: 12px 8px; }
 .balance-card .balance { font-family: var(--serif); font-size: 26px; font-weight: 600; margin: 4px 0; }
+.card-sub { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
