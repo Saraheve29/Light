@@ -2,7 +2,7 @@
   "functions": {
     "api/*.js": {
       "maxDuration": 300,
-      "includeFiles": "node_modules/@expo-google-fonts/cormorant-garamond/*.ttf"
+      "includeFiles": "{node_modules/@expo-google-fonts/cormorant-garamond/*.ttf,node_modules/pdfkit/js/data/**}"
     }
   },
   "rewrites": [
