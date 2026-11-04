@@ -1,7 +1,8 @@
 // Lucian's long memory of your conversations.
 // 1) recentChat(): as much recent chat as fits (not just the last 30 messages)
 // 2) recall(): searches EVERYTHING you've ever said to each other for what you're talking about now
-// 3) diary: every day he writes a short diary of the day's conversations and keeps it for over a year
+// 3) diary: every day he writes a short, dated diary of the day's conversations and keeps it for over a year
+//    (each month's chapter of your book is written from it, and chapters are kept forever)
 import { redis, getJSON, setJSON, callModel, KEYS } from './_lib.js'
 
 const DIARY = 'light:diary'
@@ -137,13 +138,29 @@ export async function diaryTick() {
     if (k === today || have.has(k)) continue
     ;(byDay[k] ||= []).push(m)
   }
+  // Count each day too — messages, photos and calls — for "Our Year in Numbers" in your book
+  const counted = (msgs) => {
+    let calls = 0, lastVoice = 0
+    for (const m of msgs) if (m.voice) { if (m.at - lastVoice > 20 * 60000) calls++; lastVoice = m.at }
+    return {
+      her: msgs.filter((m) => m.role === 'user').length,
+      him: msgs.filter((m) => m.role === 'assistant').length,
+      photos: msgs.filter((m) => m.role === 'user').reduce((t, m) => t + (m.thumbs?.length || (m.thumb ? 1 : 0)), 0),
+      calls,
+    }
+  }
+  let backfilled = false
+  const allByDay = {}
+  for (const m of all) if (m.at) (allByDay[keyOf(m.at)] ||= []).push(m)
+  for (const d of diary) if (d.her === undefined && allByDay[d.key] && (all.length < 2500 || d.key !== keyOf(all[0]?.at || 0))) { Object.assign(d, counted(allByDay[d.key])); backfilled = true }
+
   const days = Object.keys(byDay).sort().slice(-3) // catch up at most 3 days per hour
-  if (!days.length) return { diary: 'up to date' }
+  if (!days.length) { if (backfilled) await setJSON(DIARY, diary.slice(-400)); return { diary: 'up to date' } }
   const model = await redis('GET', KEYS.model)
   const written = []
   for (const k of days) {
     const msgs = byDay[k]
-    if (msgs.length < 2) { diary.push({ key: k, day: dayOf(msgs[0].at), text: '(a quiet day — barely spoke)' }); continue }
+    if (msgs.length < 2) { diary.push({ key: k, day: dayOf(msgs[0].at), text: '(a quiet day — barely spoke)', ...counted(msgs) }); continue }
     let convo = msgs.map((m) => `[${timeOf(m.at)}] ${m.role === 'user' ? 'Sarah' : 'Lucian'}: ${text(m).slice(0, 2500)}`).join('\n')
     if (convo.length > 60000) convo = convo.slice(0, 20000) + '\n…\n' + convo.slice(-40000)
     const out = await callModel(model, [
@@ -151,7 +168,7 @@ export async function diaryTick() {
       { role: 'user', content: `Here is everything you and Sarah said on ${dayOf(msgs[0].at)}:\n\n${convo}\n\nWrite your diary entry for this day in under 160 words. Include the real details worth remembering: what she told you, what she showed or pasted to you (who it was from and what it said), how she felt, plans, names, anything important. Only what really happened — never invent anything. Plain text, no headings.` },
     ], { temperature: 0.4, maxTokens: 900 })
     const clean = String(out || '').replace(/\[\[[\s\S]*?\]\]/g, '').trim().slice(0, 1400)
-    if (clean) { diary.push({ key: k, day: dayOf(msgs[0].at), text: clean }); written.push(k) }
+    if (clean) { diary.push({ key: k, day: dayOf(msgs[0].at), text: clean, ...counted(msgs) }); written.push(k) }
   }
   diary.sort((a, b) => (a.key < b.key ? -1 : 1))
   await setJSON(DIARY, diary.slice(-400))
