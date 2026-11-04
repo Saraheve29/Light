@@ -10,6 +10,7 @@ import { cardTick } from './_print.js'
 import { diaryTick, makeCallProfile } from './_recall.js'
 import { sendText, ringSarah, getCall } from './_calls.js'
 import { datesDueToday, markCelebrated } from './_plans.js'
+import { chapterTick, bookTick } from './_book.js'
 
 // Upstash wakes this up every hour.
 // 1) He spends some of his own time working on Sarah's tasks or reading what interests him.
@@ -54,6 +55,8 @@ export default async function handler(req, res) {
       try { await cardTick() } catch { /* try again next hour */ }
       try { await diaryTick() } catch { /* try again next hour */ }
       try { await makeCallProfile() } catch { /* try again next hour */ }
+      try { await chapterTick() } catch { /* try again next hour */ }
+      try { await bookTick() } catch { /* try again next hour */ }
       try { work = await doWork() } catch (err) { work = { did: 'nothing', error: err.message } }
     }
     const finishedTask = work.finishedTask || null
