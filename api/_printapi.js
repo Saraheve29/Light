@@ -1,7 +1,7 @@
 import { checkAuth } from './_lib.js'
 import { cardPng } from './_card.js'
 import {
-  findCard, getCards, checkCards, makeCard, getCardSettings, saveCardSettings, hasPrintKey, isSandbox, imageUrl,
+  findCard, getCards, checkCards, makeCard, getCardSettings, saveCardSettings, hasPrintKey, isSandbox, imageUrl, prodigiBase,
 } from './_print.js'
 import {
   getBookSettings, saveBookSettings, getChapters, buildBook, writeForeword, bookPdf,
@@ -77,7 +77,7 @@ export default async function handler(req, res) {
     if (req.method === 'POST' && req.body?.bookPhotoRemove) { await removeBookPhoto(String(req.body.bookPhotoRemove)); return res.status(200).json({ ok: true }) }
 
     if (req.method === 'GET') {
-      const [cards, settings] = await Promise.all([checkCards(), getCardSettings()])
+      const [cards, settings] = await Promise.all([checkCards(), getCardSettings(), hasPrintKey() ? prodigiBase().catch(() => {}) : null])
       const peek = req.query?.peek === '1'
       return res.status(200).json({
         settings,
