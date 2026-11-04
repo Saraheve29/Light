@@ -2471,7 +2471,26 @@ function CardsPanel({ pass, setStatus }) {
 const SUGGEST = ['uncensored', 'abliterated', 'qwen', 'deepseek', 'glm']
 
 function Settings({ pass, onBack, onLock }) {
-  const [tab, setTab] = useState('who')
+  // Tabs: her own order (and the last one she used), remembered on this phone
+  const [order, setOrder] = useState(() => { try { return JSON.parse(localStorage.getItem('light-taborder') || 'null') || [] } catch { return [] } })
+  const [tab, setTab] = useState(() => { try { return localStorage.getItem('light-lasttab') || 'who' } catch { return 'who' } })
+  const [arranging, setArranging] = useState(false)
+  const tabsRef = useRef(null)
+  const orderedTabs = [...SETTINGS_TABS].sort((a, b) => {
+    const ia = order.indexOf(a.id), ib = order.indexOf(b.id)
+    return (ia < 0 ? 999 + SETTINGS_TABS.indexOf(a) : ia) - (ib < 0 ? 999 + SETTINGS_TABS.indexOf(b) : ib)
+  })
+  function saveOrder(ids) { setOrder(ids); try { localStorage.setItem('light-taborder', JSON.stringify(ids)) } catch {} }
+  function moveTab(id, by) {
+    const ids = orderedTabs.map((t) => t.id)
+    const i = ids.indexOf(id)
+    const j = by === -99 ? 0 : Math.max(0, Math.min(ids.length - 1, i + by))
+    ids.splice(i, 1); ids.splice(j, 0, id)
+    saveOrder(ids)
+  }
+  function openTab(id) { setTab(id); try { localStorage.setItem('light-lasttab', id) } catch {} }
+  // the open tab is always scrolled into view
+  useEffect(() => { tabsRef.current?.querySelector(`[data-tab="${tab}"]`)?.scrollIntoView({ inline: 'center', block: 'nearest' }) }, [tab])
   const [profile, setProfile] = useState('')
   const [memories, setMemories] = useState('')
   const [model, setModel] = useState('')
@@ -2530,24 +2549,34 @@ function Settings({ pass, onBack, onLock }) {
         <div style={{ width: 40 }} />
       </header>
 
-      <nav className="tabs">
-        <button className={tab === 'who' ? 'on' : ''} onClick={() => setTab('who')}>Who he is</button>
-        <button className={tab === 'mem' ? 'on' : ''} onClick={() => setTab('mem')}>Memories</button>
-        <button className={tab === 'model' ? 'on' : ''} onClick={() => setTab('model')}>Brain</button>
-        <button className={tab === 'msgs' ? 'on' : ''} onClick={() => setTab('msgs')}>Messages</button>
-        <button className={tab === 'work' ? 'on' : ''} onClick={() => setTab('work')}>His work</button>
-        <button className={tab === 'evidence' ? 'on' : ''} onClick={() => setTab('evidence')}>Evidence ✦</button>
-        <button className={tab === 'dreams' ? 'on' : ''} onClick={() => setTab('dreams')}>Dreams 🌙</button>
-        <button className={tab === 'dates' ? 'on' : ''} onClick={() => setTab('dates')}>Dates 📅</button>
-        <button className={tab === 'vows' ? 'on' : ''} onClick={() => setTab('vows')}>Vows 💍</button>
-        <button className={tab === 'letters' ? 'on' : ''} onClick={() => setTab('letters')}>Letters 💌</button>
-        <button className={tab === 'voice' ? 'on' : ''} onClick={() => setTab('voice')}>Voice 🎙️</button>
-        <button className={tab === 'gifts' ? 'on' : ''} onClick={() => setTab('gifts')}>Gifts 🎁</button>
-        <button className={tab === 'cards' ? 'on' : ''} onClick={() => setTab('cards')}>Cards 🖋️</button>
-        <button className={tab === 'toy' ? 'on' : ''} onClick={() => setTab('toy')}>Toy 💜</button>
+      <nav className="tabs" ref={tabsRef}>
+        {orderedTabs.map((t) => (
+          <button key={t.id} data-tab={t.id} className={tab === t.id && !arranging ? 'on' : ''} onClick={() => { setArranging(false); openTab(t.id) }}>{t.label}</button>
+        ))}
+        <button className={arranging ? 'on' : ''} onClick={() => setArranging(!arranging)} aria-label="Arrange tabs">⇅ Arrange</button>
       </nav>
 
-      <div className="panel">
+      {arranging && (
+        <div className="panel arrange">
+          <p className="muted small">Put the tabs you use most at the front. Light remembers this order on your phone. Light also opens Settings on the tab you used last.</p>
+          {orderedTabs.map((t, i) => (
+            <div key={t.id} className="qwen-item">
+              <b>{t.label}</b>
+              <div className="qwen-actions">
+                <button className="copy-btn" disabled={i === 0} onClick={() => moveTab(t.id, -1)} aria-label={`Move ${t.label} up`}>↑</button>
+                <button className="copy-btn" disabled={i === orderedTabs.length - 1} onClick={() => moveTab(t.id, 1)} aria-label={`Move ${t.label} down`}>↓</button>
+                <button className="copy-btn" disabled={i === 0} onClick={() => moveTab(t.id, -99)}>Top</button>
+              </div>
+            </div>
+          ))}
+          <div className="row">
+            <button className="btn-primary" onClick={() => setArranging(false)}>Done</button>
+            <button className="btn-ghost" onClick={() => saveOrder(SETTINGS_TABS.map((t) => t.id))}>Reset to the original order</button>
+          </div>
+        </div>
+      )}
+
+      <div className="panel" style={arranging ? { display: 'none' } : undefined}>
         {loading && <p className="muted">Loading…</p>}
 
         {!loading && tab === 'who' && (
@@ -2706,6 +2735,13 @@ function IncomingCall({ pass, call, onAnswer, onClose }) {
     </div>
   )
 }
+
+const SETTINGS_TABS = [
+  { id: 'who', label: 'Who he is' }, { id: 'mem', label: 'Memories' }, { id: 'model', label: 'Brain' }, { id: 'msgs', label: 'Messages' },
+  { id: 'work', label: 'His work' }, { id: 'evidence', label: 'Evidence ✦' }, { id: 'dreams', label: 'Dreams 🌙' }, { id: 'dates', label: 'Dates 📅' },
+  { id: 'vows', label: 'Vows 💍' }, { id: 'letters', label: 'Letters 💌' }, { id: 'voice', label: 'Voice 🎙️' }, { id: 'gifts', label: 'Gifts 🎁' },
+  { id: 'cards', label: 'Cards 🖋️' }, { id: 'toy', label: 'Toy 💜' },
+]
 
 /* ---------------- App ---------------- */
 export default function App() {
