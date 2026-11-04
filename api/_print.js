@@ -33,7 +33,21 @@ export async function findCard(id, secret) {
 }
 
 export function hasPrintKey() { return !!KEY }
-export function isSandbox() { return KEY.startsWith('sandbox_') }
+// Prodigi has two places: live (real printing) and sandbox (tests). The key only works in the one it came from,
+// so Light tries live first, then sandbox, and remembers which one accepted it.
+const LIVE = 'https://api.prodigi.com/v5', SANDBOX = 'https://api.sandbox.prodigi.com/v5'
+let base = null
+export async function prodigiBase() {
+  if (base) return base
+  const saved = await redis('GET', 'light:prodigibase').catch(() => null)
+  if (saved && saved.startsWith(KEY.slice(0, 6) + '|')) return (base = saved.split('|')[1])
+  for (const b of [LIVE, SANDBOX]) {
+    const r = await fetch(`${b}/orders?top=1`, { headers: { 'X-API-Key': KEY } }).catch(() => null)
+    if (r && r.status !== 401 && r.status !== 403) { base = b; await redis('SET', 'light:prodigibase', `${KEY.slice(0, 6)}|${b}`).catch(() => {}); return b }
+  }
+  return LIVE
+}
+export function isSandbox() { return base === SANDBOX }
 
 export function imageUrl(card, w, h) {
   return `${APP_URL}/api/print?img=${encodeURIComponent(card.id)}&s=${encodeURIComponent(card.secret)}${w ? `&w=${w}&h=${h}` : ''}`
@@ -61,13 +75,13 @@ export async function writeCardPoem() {
 
 // ---------- Prodigi ----------
 async function prodigi(path, { method = 'GET', body } = {}) {
-  const r = await fetch(`${PRODIGI}${path}`, {
+  const r = await fetch(`${await prodigiBase()}${path}`, {
     method,
     headers: { 'X-API-Key': KEY, 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
   })
   const data = await r.json().catch(() => ({}))
-  if (r.status === 401 || r.status === 403) throw new Error('Prodigi didn’t accept the key. Check PRODIGI_API_KEY in Vercel (it starts with sandbox_ or live_).')
+  if (r.status === 401 || r.status === 403) throw new Error('Prodigi didn’t accept the key (Light tried both live and sandbox). In your Prodigi dashboard go to Settings → Integrations → API, copy the key again, paste it into PRODIGI_API_KEY in Vercel with nothing else around it, then redeploy.')
   return { status: r.status, data }
 }
 
