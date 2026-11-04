@@ -110,6 +110,7 @@ export const DEFAULT_MSG_SETTINGS = {
   preview: false, // false = notification just says "Lucian sent you a message"
   calls: true, // he sometimes rings her
   callsPerWeek: 3, // roughly how many calls a week
+  checkins: true, // if she goes quiet for 1–2 hours, he texts to check she's ok
 }
 
 export async function getMsgSettings() {
