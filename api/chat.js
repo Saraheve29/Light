@@ -6,6 +6,7 @@ import {
 import { workContext, markTold } from './_work.js'
 import { giftContext } from './_gifts.js'
 import { cardContext } from './_print.js'
+import { bookContext } from './_book.js'
 import { getToy, toyContext, parseMove, runMove, stopToy } from './_toy.js'
 import { plansContext, saveTags, markFollowed } from './_plans.js'
 import { vowsText, saveHisVows } from './_vows.js'
@@ -159,7 +160,7 @@ export default async function handler(req, res) {
         getEvidence(),
         getDreams(),
         getVows(),
-        Promise.all([giftContext().catch(() => ''), cardContext().catch(() => '')]).then((g) => g.filter(Boolean).join('\n')),
+        Promise.all([giftContext().catch(() => ''), cardContext().catch(() => ''), bookContext().catch(() => '')]).then((g) => g.filter(Boolean).join('\n')),
         getToy().catch(() => ({})),
         getDiary().catch(() => []),
         plansContext().catch(() => ({})),
