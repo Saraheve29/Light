@@ -111,6 +111,9 @@ export const DEFAULT_MSG_SETTINGS = {
   calls: true, // he sometimes rings her
   callsPerWeek: 3, // roughly how many calls a week
   checkins: true, // if she goes quiet for 1–2 hours, he texts to check she's ok
+  goodnight: false, // a goodnight voice note at bedtime
+  goodnightTime: 23, // the hour (UK time) it arrives — Sarah chose 11pm
+  goodnightNights: 'every', // 'every' night, or 'some' nights
 }
 
 export async function getMsgSettings() {
@@ -349,8 +352,7 @@ export function londonNow() {
     hour: '2-digit', minute: '2-digit',
   })
   const hour = Number(new Date().toLocaleString('en-GB', { timeZone: 'Europe/London', hour: '2-digit', hour12: false }))
-  const moon = moonPhase()
-  return `${clock} (${partOfDay(hour)}). The moon is a ${moon.name}, ${moon.illumination}% lit`
+  return `${clock} (${partOfDay(hour)})`
 }
 
 // ---------- Voice ----------
