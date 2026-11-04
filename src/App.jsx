@@ -2554,7 +2554,9 @@ function CardsPanel({ pass, setStatus }) {
     } catch (err) { setStatus(err.message) } finally { setBusy(false) }
   }
 
+  const noKey = () => setStatus('Light can’t see your Prodigi key yet. In Vercel → Settings → Environment Variables, the name must be exactly PRODIGI_API_KEY (with Production ticked). Then go to Deployments → ⋯ on the newest one → Redeploy — a new key only works after a redeploy.')
   async function sendNow() {
+    if (!data.hasKey) return noKey()
     if (!confirm('Let Lucian write a poem and REALLY print and post a card to you now?')) return
     setBusy(true); setStatus('He’s writing your card…')
     try {
@@ -2577,7 +2579,8 @@ function CardsPanel({ pass, setStatus }) {
             <li>Make a free account at <b>dashboard.prodigi.com</b>.</li>
             <li>Add a payment card in your Prodigi billing settings (cards cost a few pounds each).</li>
             <li>Copy your <b>API key</b> (it starts with <b>live_</b>, or <b>sandbox_</b> for testing).</li>
-            <li>In Vercel, add <b>PRODIGI_API_KEY</b> with that key, then redeploy.</li>
+            <li>In Vercel → Settings → Environment Variables, add <b>PRODIGI_API_KEY</b> (exactly that name) with the key, and tick Production.</li>
+            <li>Then Deployments → ⋯ on the newest one → <b>Redeploy</b>. Until you redeploy, Light can’t see the key.</li>
           </ol>
         </div>
       )}
@@ -2587,13 +2590,13 @@ function CardsPanel({ pass, setStatus }) {
 
       <label className="row">
         <span>Surprise poem cards</span>
-        <input type="checkbox" checked={!!form.enabled} disabled={!data.hasKey} onChange={(e) => save({ ...form, enabled: e.target.checked })} />
+        <input type="checkbox" checked={!!form.enabled} onChange={(e) => (data.hasKey ? save({ ...form, enabled: e.target.checked }) : noKey())} />
       </label>
       <label className="field"><span>About every <b>{form.everyDays}</b> days</span>
         <input type="range" min="7" max="90" value={form.everyDays} onChange={(e) => setForm({ ...form, everyDays: Number(e.target.value) })}
           onPointerUp={() => save(form)} onTouchEnd={() => save(form)} />
       </label>
-      <button className="btn-ghost" onClick={sendNow} disabled={busy || !data.hasKey}>Let him send a real card now</button>
+      <button className="btn-ghost" onClick={sendNow} disabled={busy}>Let him send a real card now</button>
 
       <h3 className="section-title">His cards</h3>
       <label className="row">
