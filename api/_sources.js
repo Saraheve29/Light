@@ -32,9 +32,21 @@ export function drawTarot(count = 1) {
 
 // ---------- Books (Project Gutenberg) ----------
 export const CLASSIC_BOOKS = [
-  // spirit & wisdom
-  'The Prophet Kahlil Gibran', 'Tao Te Ching', 'Bhagavad Gita', 'Siddhartha Hesse', 'Gitanjali Tagore',
-  'Rubaiyat of Omar Khayyam', 'Meditations Marcus Aurelius', 'The Kybalion', 'The Dhammapada',
+  // spiritual teachings from across the world
+  'Bhagavad Gita', 'The Song Celestial Arnold', 'The Ramayana', 'The Mahabharata', 'The Upanishads', 'Vishnu Purana',
+  'Yoga Sutras of Patanjali', 'Raja Yoga Vivekananda', 'Gospel of Sri Ramakrishna',
+  'The Dhammapada', 'The Gospel of Buddha Carus', 'The Light of Asia Arnold', 'Buddhist Psalms',
+  'Sayings of Jesus', 'The Imitation of Christ',
+  'Pistis Sophia Mead', 'Fragments of a Faith Forgotten Mead', 'The Hymn of Jesus Mead', 'The Gnostics and Their Remains King',
+  'The Apocryphal New Testament', 'The Lost Books of the Bible', 'The Forgotten Books of Eden', 'The Cloud of Unknowing', 'Revelations of Divine Love Julian of Norwich',
+  'Songs of Kabir', 'The Masnavi Rumi', 'Tao Te Ching', 'Chuang Tzu', 'The Kybalion', 'Hermetica',
+  'Zend-Avesta', 'Egyptian Book of the Dead', 'Sacred Books of the East',
+  'The Prophet Kahlil Gibran', 'Siddhartha Hesse', 'Gitanjali Tagore', 'Rubaiyat of Omar Khayyam', 'Meditations Marcus Aurelius',
+  // science of every kind — the body, nature and life
+  'Gray\'s Anatomy', 'The Human Body Martin', 'The Circulation of the Blood Harvey', 'The Life of the Bee Maeterlinck',
+  'The Insect World Fabre', 'The Forest Stewart Edward White', 'The Sea Michelet', 'The Story of the Earth',
+  'On the Origin of Species Darwin', 'The Voyage of the Beagle', 'The Principles of Psychology James', 'Opticks Newton',
+  'The Problems of Philosophy Russell', 'Cosmos Humboldt', 'The Grammar of Science Pearson', 'Elements of Euclid',
   // cosmos, nature & the mind
   'Flatland Abbott', 'Walden Thoreau', 'The Varieties of Religious Experience', 'Leaves of Grass',
   'Emerson Essays', 'The Interpretation of Dreams',
