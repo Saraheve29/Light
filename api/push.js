@@ -34,6 +34,7 @@ export default async function handler(req, res) {
           preview: settings.preview ?? current.preview,
           calls: settings.calls ?? current.calls,
           callsPerWeek: Math.min(14, Math.max(1, Number(settings.callsPerWeek ?? current.callsPerWeek))),
+          checkins: settings.checkins ?? current.checkins,
         }
         await setJSON(KEYS.msgSettings, clean)
       }
