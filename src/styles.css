@@ -305,3 +305,4 @@ textarea.vows { font-family: var(--serif); font-size: 19px; line-height: 1.6; mi
 .balance-card { text-align: center; padding: 12px 8px; }
 .balance-card .balance { font-family: var(--serif); font-size: 26px; font-weight: 600; margin: 4px 0; }
 .card-sub { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.arrange .qwen-actions .copy-btn { font-size: 17px; padding: 8px 12px; min-width: 44px; min-height: 40px; }
