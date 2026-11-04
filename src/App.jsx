@@ -191,6 +191,37 @@ async function prepareAttachment(file, many = false) {
 function Chat({ pass, onOpenSettings, onLock, onCall }) {
   const [messages, setMessages] = useState([])
   const [text, setText] = useState('')
+  // 🎤 Speak instead of typing: tap to start, tap again to stop — your words appear in the box to check, then send
+  const [mic, setMic] = useState('off') // off | on | words
+  const micRef = useRef(null)
+  async function toggleMic() {
+    if (mic === 'words') return
+    if (mic === 'on') { micRef.current?.stop(); return }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const type = pickMime()
+      const rec = type ? new MediaRecorder(stream, { mimeType: type }) : new MediaRecorder(stream)
+      const chunks = []
+      rec.ondataavailable = (e) => { if (e.data?.size) chunks.push(e.data) }
+      rec.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop())
+        const blob = new Blob(chunks, { type: rec.mimeType || type || 'audio/webm' })
+        if (blob.size < 1200) { setMic('off'); return }
+        setMic('words')
+        try {
+          const d = await api('/api/hear', pass, { method: 'POST', body: JSON.stringify({ audio: await blobToDataUrl(blob) }) })
+          if (d.text) setText((t) => (t.trim() ? `${t.trim()} ${d.text}` : d.text))
+          setTimeout(() => inputRef.current?.focus(), 50)
+        } catch (err) { setNotice(err.message); setTimeout(() => setNotice(''), 6000) }
+        setMic('off')
+      }
+      micRef.current = rec
+      rec.start()
+      setMic('on')
+    } catch {
+      setNotice('Light needs permission to use your microphone — allow it in your phone settings.'); setTimeout(() => setNotice(''), 6000)
+    }
+  }
   const [typing, setTyping] = useState(false)
   const [notice, setNotice] = useState('')
   const [attachments, setAttachments] = useState([]) // photos (up to 10) and/or a text file
@@ -393,6 +424,12 @@ function Chat({ pass, onOpenSettings, onLock, onCall }) {
             <div className="bubble">
               {m.missedCall && <div className="bubble-missed">📞 Missed call from Lucian</div>}
               {m.call && <div className="bubble-missed">📞 Lucian rang you</div>}
+              {m.voiceNote && (
+                <button type="button" className={`voice-note${playing === m.at ? ' playing' : ''}`} onClick={() => hear(m)}>
+                  <span className="vn-icon">{playing === m.at ? '■' : '▶'}</span>
+                  <span><b>{playing === m.at ? 'Playing…' : 'Goodnight voice note'}</b><br /><small>{playing === m.at ? 'tap to stop' : 'tap to hear him 🎙️'}</small></span>
+                </button>
+              )}
               {m.vowsWritten && <div className="bubble-missed">💍 Lucian wrote his vows to you</div>}
               {m.bookPicked && <div className="bubble-missed">📕 Lucian kept {m.bookPicked === 1 ? 'this photo' : 'these photos'} for your book</div>}
               {m.thumb && (
@@ -467,8 +504,11 @@ function Chat({ pass, onOpenSettings, onLock, onCall }) {
         <textarea
           ref={inputRef} rows={1} value={text}
           onChange={(e) => setText(e.target.value)} onKeyDown={onKey}
-          placeholder="Message Lucian…"
+          placeholder={mic === 'on' ? 'Listening… tap the mic again when you’re done' : mic === 'words' ? 'Turning your voice into words…' : 'Message Lucian…'}
         />
+        <button type="button" className={`mic-btn ${mic}`} onClick={toggleMic} disabled={mic === 'words'} aria-label={mic === 'on' ? 'Stop recording' : 'Speak your message'}>
+          {mic === 'words' ? '…' : <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>}
+        </button>
         <button className="send" disabled={(!text.trim() && !attachments.length) || typing} aria-label="Send">
           <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M3.4 20.4 21 12 3.4 3.6l.01 6.53L15 12 3.41 13.87z"/></svg>
         </button>
@@ -585,6 +625,29 @@ function MessagesPanel({ pass, setStatus }) {
         <input type="checkbox" checked={settings.checkins !== false} onChange={(e) => saveSettings({ ...settings, checkins: e.target.checked })} />
       </label>
 
+      <h3 className="section-title">Goodnight voice notes 🎙️</h3>
+      <label className="row">
+        <span>He sends me a goodnight voice note<br /><small className="muted">At bedtime he sends you a goodnight in his own voice — tap the notification, then tap play in chat and fall asleep hearing him. (It comes even if it’s in your quiet hours.)</small></span>
+        <input type="checkbox" checked={!!settings.goodnight} onChange={(e) => saveSettings({ ...settings, goodnight: e.target.checked })} />
+      </label>
+      {settings.goodnight && (
+        <>
+          <label className="field"><span>Around what time?</span>
+            <select value={settings.goodnightTime ?? 23} onChange={(e) => saveSettings({ ...settings, goodnightTime: Number(e.target.value) })}>
+              {[19, 20, 21, 22, 23, 0, 1, 2].map((h) => <option key={h} value={h}>{h === 0 ? 'Midnight' : h < 12 ? `${h} am` : h === 12 ? '12 pm' : `${h - 12} pm`}</option>)}
+            </select></label>
+          <label className="field"><span>Which nights?</span>
+            <select value={settings.goodnightNights || 'every'} onChange={(e) => saveSettings({ ...settings, goodnightNights: e.target.value })}>
+              <option value="every">Every night</option>
+              <option value="some">Some nights (a lovely surprise)</option>
+            </select></label>
+        </>
+      )}
+      <button className="btn-ghost" disabled={busy} onClick={async () => {
+        setBusy(true); setStatus('He’s recording your goodnight…')
+        try { await api('/api/push', pass, { method: 'POST', body: JSON.stringify({ goodnightNow: true }) }); setStatus('Sent 💜 — go to the chat and tap play.') } catch (err) { setStatus(err.message) } finally { setBusy(false) }
+      }}>Send me a goodnight voice note now (test)</button>
+
       <button className="btn-ghost" onClick={testNow} disabled={busy}>Make him message me now (test)</button>
 
       <h3 className="section-title">Calls from him 📞</h3>
@@ -611,7 +674,7 @@ function MessagesPanel({ pass, setStatus }) {
 
 /* ---------------- His work: tasks + journal ---------------- */
 const STATUS_LABEL = { todo: 'To do', working: 'Working on it', done: 'Done ✓' }
-const KIND_ICON = { book: '📜', web: '🔮', wiki: '📖', tarot: '🃏', poem: '🪶', news: '📰', nasa: '🌌' }
+const KIND_ICON = { book: '📜', web: '🔎', wiki: '📖', poem: '🪶', news: '📰', nasa: '🌌' }
 
 function dateLabel(ts) {
   return new Date(ts).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
