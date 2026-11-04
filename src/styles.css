@@ -323,3 +323,11 @@ textarea.vows { font-family: var(--serif); font-size: 19px; line-height: 1.6; mi
 .star-btn.on { color: #e8b04a; }
 .kept-words { position: relative; padding: 10px 34px 10px 12px; margin-top: 8px; border-radius: 12px; background: rgba(255, 255, 255, 0.04); border: 1px solid var(--line); }
 .kept-words p { margin: 0 0 4px; font-style: italic; white-space: pre-line; }
+.mic-btn { flex: none; width: 42px; height: 42px; border-radius: 50%; border: 1px solid var(--line); background: transparent; color: inherit; display: grid; place-items: center; cursor: pointer; }
+.mic-btn.on { background: #c0392b; border-color: #c0392b; color: #fff; animation: micpulse 1.2s ease-in-out infinite; }
+.mic-btn.words { opacity: 0.6; }
+@keyframes micpulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(192, 57, 43, 0.5); } 50% { box-shadow: 0 0 0 8px rgba(192, 57, 43, 0); } }
+.voice-note { display: flex; align-items: center; gap: 12px; width: 100%; margin: 2px 0 8px; padding: 10px 14px; border-radius: 16px; border: 1px solid rgba(139, 92, 246, 0.5); background: linear-gradient(135deg, rgba(139, 92, 246, 0.25), rgba(76, 29, 149, 0.25)); color: inherit; text-align: left; cursor: pointer; }
+.voice-note .vn-icon { width: 38px; height: 38px; flex: none; border-radius: 50%; display: grid; place-items: center; background: linear-gradient(135deg, var(--purple), var(--purple-deep)); color: #fff; font-size: 14px; }
+.voice-note.playing .vn-icon { animation: micpulse 1.2s ease-in-out infinite; }
+.voice-note small { opacity: 0.75; }
