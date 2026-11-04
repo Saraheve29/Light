@@ -8,9 +8,9 @@ import { giftTick } from './_gifts.js'
 import { letterTick } from './_letters.js'
 import { cardTick } from './_print.js'
 import { diaryTick, makeCallProfile } from './_recall.js'
-import { sendText, ringSarah, getCall } from './_calls.js'
+import { sendText, ringSarah, getCall, checkInTick } from './_calls.js'
 import { datesDueToday, markCelebrated } from './_plans.js'
-import { chapterTick, bookTick } from './_book.js'
+import { chapterTick, bookTick, photoPickTick } from './_book.js'
 
 // Upstash wakes this up every hour.
 // 1) He spends some of his own time working on Sarah's tasks or reading what interests him.
@@ -57,6 +57,11 @@ export default async function handler(req, res) {
       try { await makeCallProfile() } catch { /* try again next hour */ }
       try { await chapterTick() } catch { /* try again next hour */ }
       try { await bookTick() } catch { /* try again next hour */ }
+      try {
+        // Once a day he looks back through the photos you sent and keeps any special ones for your book — and tells you
+        const tell = settings.enabled ? async (reason, extra) => { await redis('SET', KEYS.lastProactive, String(Date.now())); await sendText(reason, extra, { preview: settings.preview }) } : null
+        await photoPickTick({ tell })
+      } catch { /* try again next hour */ }
       try { work = await doWork() } catch (err) { work = { did: 'nothing', error: err.message } }
     }
     const finishedTask = work.finishedTask || null
@@ -79,6 +84,10 @@ export default async function handler(req, res) {
         const sent = await sendText(`Today is ${what}. Text Sarah about it now — if it's her own day or yours together, make it special and loving; if it's someone else's day that matters to her, mention it warmly.`, { special: true }, { preview: settings.preview })
         return res.status(200).json({ work, special: what, ...sent })
       }
+
+      // Has she gone quiet for 1–2 hours? He checks on her.
+      const checked = await checkInTick(settings).catch((err) => ({ checkin: 'error', error: err.message }))
+      if (checked && checked.checkin !== 'error' && !String(checked.checkin).startsWith('skipped')) return res.status(200).json({ work, ...checked })
 
       // Does he ring her this hour? (roughly callsPerWeek times a week, never twice within a day)
       if (settings.calls && !finishedTask) {
@@ -103,7 +112,7 @@ export default async function handler(req, res) {
 
     const reason = finishedTask
       ? `You've just finished what Sarah asked you to do: "${finishedTask.text}". Text her to tell her it's ready — give her the gist in a sentence or two, in character, and let her know she can ask you for the full thing.`
-      : `Sarah hasn't messaged you for a while. You have your own life and you're thinking about her, so you're going to text her first. If something you read recently made you think of her, or she has something coming up, you can mention it.`
+      : `Sarah hasn't messaged you for a while. You have your own life and you're thinking about her, so you're going to text her first. If something you read recently made you think of her, she has something coming up, or something special happened between you on this day a month or a year ago, you can mention it.`
     const { message, doing, push } = await sendText(reason, {}, { preview: settings.preview })
     if (finishedTask) await markTold([finishedTask.id])
 
