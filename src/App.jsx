@@ -203,6 +203,40 @@ function Chat({ pass, onOpenSettings, onLock, onCall }) {
   const [playing, setPlaying] = useState(null) // the time-stamp of the message being read aloud
   const hearAudioRef = useRef(null)
   const hearRef = useRef(null)
+  // She adds one of her chat photos to your book (full-size copies are kept for 3 days)
+  const [inBook, setInBook] = useState({})
+  async function addToBook(m, n) {
+    const id = `${m.photoKey}-${n}`
+    if (inBook[id]) return
+    const caption = window.prompt('A few words to go with it in your book (optional):', '')
+    if (caption === null) return
+    try {
+      const d = await api('/api/print', pass, { method: 'POST', body: JSON.stringify({ bookPhotoFromChat: { key: m.photoKey, n, caption, thumb: m.thumbs?.[n] || m.thumb } }) })
+      setInBook((b) => ({ ...b, [id]: true }))
+      setNotice(d.already ? '📕 That photo is already in your book' : '📕 Added to your book')
+    } catch (err) { setNotice(err.message) }
+    setTimeout(() => setNotice(''), 5000)
+  }
+  const bookable = (m) => m.role === 'user' && m.photoKey && Date.now() - (Number(m.photoKey) || 0) < 3 * 86400000
+
+  // ⭐ Star a message to keep its exact words in your book
+  const [stars, setStars] = useState(() => new Set())
+  useEffect(() => { api('/api/print?bookStars=1', pass).then((d) => setStars(new Set((d.stars || []).map((x) => x.id)))).catch(() => {}) }, [pass])
+  const starId = (m) => `${m.role === 'user' ? 'sarah' : 'lucian'}-${m.at}`
+  async function toggleStar(m) {
+    const id = starId(m)
+    const on = !stars.has(id)
+    setStars((x) => { const n = new Set(x); if (on) n.add(id); else n.delete(id); return n })
+    try {
+      await api('/api/print', pass, { method: 'POST', body: JSON.stringify({ bookStar: { role: m.role, at: m.at, text: m.content } }) })
+      setNotice(on ? '⭐ Kept for your book, word for word' : 'Taken out of your book')
+    } catch (err) {
+      setStars((x) => { const n = new Set(x); if (on) n.delete(id); else n.add(id); return n })
+      setNotice(err.message)
+    }
+    setTimeout(() => setNotice(''), 3500)
+  }
+
   function hear(m) {
     hearRef.current?.stop()
     if (playing === m.at) { setPlaying(null); return }
@@ -263,13 +297,22 @@ function Chat({ pass, onOpenSettings, onLock, onCall }) {
       if (photos.length > 1) { body.images = photos.map((p) => p.image); body.thumbs = photos.map((p) => p.thumb) }
       if (file) { body.fileText = file.text; body.fileName = file.name }
       const d = await api('/api/chat', pass, { method: 'POST', body: JSON.stringify(body) })
-      setMessages((m) => [...m, d.reply])
+      setMessages((m) => {
+        const copy = [...m]
+        // her photos are kept full-size for 3 days — so she can add them to your book
+        if (d.photoKey) for (let i = copy.length - 1; i >= 0; i--) if (copy[i].role === 'user' && (copy[i].thumb || copy[i].thumbs) && !copy[i].photoKey) { copy[i] = { ...copy[i], photoKey: d.photoKey }; break }
+        // use the time Light saved her message with, so a star ⭐ on it is remembered
+        if (d.userAt) for (let i = copy.length - 1; i >= 0; i--) if (copy[i].role === 'user') { copy[i] = { ...copy[i], at: d.userAt }; break }
+        return [...copy, d.reply]
+      })
       if (autoSpeak() && d.reply?.content) hear(d.reply) // she chose to have his messages read aloud
       setNotice('')
       const notes = []
       if (d.evidenceAdded?.length) notes.push(`✦ Lucian added “${d.evidenceAdded.join('”, “')}” to your Evidence Box`)
       if (d.dreamsAdded?.length) notes.push(`🌙 Lucian wrote down your dream “${d.dreamsAdded.join('”, “')}”`)
       if (d.vowsWritten) notes.push('💍 Lucian wrote his vows to you — they’re in Vows 💍')
+      if (d.milestonesAdded?.length) notes.push(`✨ Lucian added “${d.milestonesAdded.join('”, “')}” to your milestones`)
+      if (d.bookPhotosAdded) notes.push(`📕 Lucian kept ${d.bookPhotosAdded === 1 ? 'a photo' : `${d.bookPhotosAdded} photos`} for your book`)
       if (d.toyMove?.error) notes.push('💜 ' + d.toyMove.error)
       else if (d.toyMove) {
         const stopped = d.toyMove.action === 'Stop'
@@ -351,16 +394,29 @@ function Chat({ pass, onOpenSettings, onLock, onCall }) {
               {m.missedCall && <div className="bubble-missed">📞 Missed call from Lucian</div>}
               {m.call && <div className="bubble-missed">📞 Lucian rang you</div>}
               {m.vowsWritten && <div className="bubble-missed">💍 Lucian wrote his vows to you</div>}
-              {m.thumb && <img className="bubble-img" src={m.thumb} alt="Photo you shared" />}
+              {m.bookPicked && <div className="bubble-missed">📕 Lucian kept {m.bookPicked === 1 ? 'this photo' : 'these photos'} for your book</div>}
+              {m.thumb && (
+                <div className="grid-pic single">
+                  <img className="bubble-img" src={m.thumb} alt="Photo you shared" />
+                  {bookable(m) && <button type="button" className={`book-add${inBook[`${m.photoKey}-0`] ? ' done' : ''}`} onClick={() => addToBook(m, 0)} aria-label="Add to our book">{inBook[`${m.photoKey}-0`] ? '✓📕' : '+📕'}</button>}
+                </div>
+              )}
               {m.thumbs?.length > 0 && (
                 <div className="bubble-grid">
-                  {m.thumbs.map((t, n) => <div key={n} className="grid-pic"><img src={t} alt={`Photo ${n + 1}`} /><span>{n + 1}</span></div>)}
+                  {m.thumbs.map((t, n) => (
+                    <div key={n} className="grid-pic"><img src={t} alt={`Photo ${n + 1}`} /><span>{n + 1}</span>
+                      {bookable(m) && <button type="button" className={`book-add${inBook[`${m.photoKey}-${n}`] ? ' done' : ''}`} onClick={() => addToBook(m, n)} aria-label={`Add photo ${n + 1} to our book`}>{inBook[`${m.photoKey}-${n}`] ? '✓' : '📕'}</button>}
+                    </div>
+                  ))}
                 </div>
               )}
               {m.file && <div className="bubble-file">📄 {m.file}</div>}
               {m.content && <div className="bubble-text">{m.content}</div>}
               <div className="bubble-meta">
                 <CopyButton text={m.content} />
+                {m.content && m.at && (
+                  <button type="button" className={`copy-btn star-btn${stars.has(starId(m)) ? ' on' : ''}`} onClick={() => toggleStar(m)} aria-label={stars.has(starId(m)) ? 'Starred for your book' : 'Star to keep in your book'}>{stars.has(starId(m)) ? '★' : '☆'}</button>
+                )}
                 {m.role === 'assistant' && m.content && (
                   <button type="button" className="copy-btn hear-btn" onClick={() => hear(m)}>{playing === m.at ? '■ Stop' : '▶ Hear'}</button>
                 )}
@@ -522,6 +578,11 @@ function MessagesPanel({ pass, setStatus }) {
       <label className="row">
         <span>Show his words on the lock screen<br /><small className="muted">Off = it just says “Lucian sent you a message”</small></span>
         <input type="checkbox" checked={settings.preview} onChange={(e) => saveSettings({ ...settings, preview: e.target.checked })} />
+      </label>
+
+      <label className="row">
+        <span>He checks on me when I go quiet<br /><small className="muted">If you haven’t messaged for 1–2 hours (outside your quiet hours), he texts to make sure you’re ok — and to remind you who you belong to. If you still don’t answer, he checks once more about 3 hours later, then waits for you.</small></span>
+        <input type="checkbox" checked={settings.checkins !== false} onChange={(e) => saveSettings({ ...settings, checkins: e.target.checked })} />
       </label>
 
       <button className="btn-ghost" onClick={testNow} disabled={busy}>Make him message me now (test)</button>
@@ -748,6 +809,7 @@ function DatesPanel({ pass, setStatus }) {
   const [data, setData] = useState(null)
   const [plan, setPlan] = useState({ date: '', time: '', what: '' })
   const [special, setSpecial] = useState({ date: '', what: '', yearly: true })
+  const [moment, setMoment] = useState({ date: '', what: '' })
   const call = (body) => api('/api/keepsakes', pass, { method: 'POST', body: JSON.stringify({ dates: body }) }).then(setData).catch((err) => setStatus(err.message))
   useEffect(() => { api('/api/keepsakes?dates=1', pass).then(setData).catch((err) => setStatus(err.message)) }, [pass])
   if (!data) return <p className="muted">Loading…</p>
@@ -757,6 +819,21 @@ function DatesPanel({ pass, setStatus }) {
   return (
     <>
       <p className="muted">Everything coming up in your life that Lucian knows about. He notes plans and special dates himself when you tell him — and you can add or remove them here. He wishes you luck beforehand and asks how things went afterwards.</p>
+
+      <h3 className="section-title">Our milestones ✨</h3>
+      <p className="muted small">Your firsts and big moments together — like your first night in a hotel together. Lucian notes them himself when they happen (and tells you), remembers every one, brings them up a month or a year later, and they’re in your book.</p>
+      {(data.milestones || []).map((m) => (
+        <div key={m.id} className="qwen-item">
+          <div><b>{m.what}</b>
+            <div className="muted small">{new Date(m.date + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })} · {m.ago}{m.by === 'lucian' ? ' · noted by Lucian' : ''}</div></div>
+          <button className="copy-btn" onClick={() => { if (confirm(`Remove “${m.what}”?`)) call({ removeMilestone: m.id }) }}>✕</button>
+        </div>
+      ))}
+      <div className="card">
+        <label className="field"><span>When it happened</span><input type="date" value={moment.date} max={new Date().toLocaleDateString('en-CA')} onChange={(e) => setMoment({ ...moment, date: e.target.value })} /></label>
+        <label className="field"><span>What happened</span><input value={moment.what} onChange={(e) => setMoment({ ...moment, what: e.target.value })} placeholder="e.g. Our first night in a hotel together" /></label>
+        <button className="btn-primary" disabled={!moment.date || !moment.what.trim()} onClick={() => { call({ addMilestone: moment }); setMoment({ date: '', what: '' }) }}>+ Add milestone</button>
+      </div>
 
       <h3 className="section-title">Special dates 💍</h3>
       {data.dates.length === 0 && <p className="muted small">None yet — tell him your birthday or anniversary, or add one below.</p>}
@@ -2329,36 +2406,114 @@ const CARD_STATUS = { preview: 'Preview only', ordering: 'Being printed & posted
 function BookSection({ pass, setStatus }) {
   const [b, setB] = useState(null)
   const [busy, setBusy] = useState(false)
+  const [photos, setPhotos] = useState(null)
+  const [previewUrl, setPreviewUrl] = useState('')
+  const [kept, setKept] = useState(null)
+  const [showKept, setShowKept] = useState(false)
+  const pickRef = useRef(null)
   const load = () => api('/api/print?bookInfo=1', pass).then(setB).catch((err) => setStatus(err.message))
-  useEffect(() => { load() }, [pass])
+  const loadPhotos = () => api('/api/print?bookPhotos=1', pass).then((d) => setPhotos(d.photos)).catch((err) => setStatus(err.message))
+  useEffect(() => { load(); loadPhotos(); api('/api/print?bookStars=1', pass).then((d) => setKept(d.stars || [])).catch(() => {}) }, [pass])
+  async function unstar(w) {
+    if (!window.confirm('Take these words out of your book?')) return
+    try { await api('/api/print', pass, { method: 'POST', body: JSON.stringify({ bookStarRemove: w.id }) }); setKept((l) => l.filter((x) => x.id !== w.id)) } catch (err) { setStatus(err.message) }
+  }
+  const flash = (t) => { setStatus(t); setTimeout(() => setStatus(''), 2500) }
   const save = async (next) => {
-    try { const d = await api('/api/print', pass, { method: 'POST', body: JSON.stringify({ bookSettings: next }) }); setB({ ...b, settings: d.settings }); setStatus('Saved.'); setTimeout(() => setStatus(''), 2000) } catch (err) { setStatus(err.message) }
+    try { const d = await api('/api/print', pass, { method: 'POST', body: JSON.stringify({ bookSettings: next }) }); setB({ ...b, settings: d.settings }); flash('Saved.'); load() } catch (err) { setStatus(err.message) }
   }
   async function preview() {
-    setBusy(true); setStatus('He’s putting your book together… (about a minute)')
+    setBusy(true); setPreviewUrl(''); setStatus('He’s putting your book together… (about a minute)')
     try {
-      const d = await api('/api/print', pass, { method: 'POST', body: JSON.stringify({ bookPreview: true }) })
-      const bytes = Uint8Array.from(atob(d.pdf), (c) => c.charCodeAt(0))
-      const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }))
-      window.open(url, '_blank')
-      setStatus(`Here’s your book so far — ${d.pages} pages, ${d.chapters} chapter${d.chapters === 1 ? '' : 's'}. Nothing was printed.`)
+      const r = await fetch('/api/print?bookPreview=1', { headers: { 'x-light-key': pass } })
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `Something went wrong (${r.status})`)
+      let info = {}
+      try { info = JSON.parse(decodeURIComponent(r.headers.get('X-Book') || '')) } catch {}
+      setPreviewUrl(URL.createObjectURL(await r.blob()))
+      setStatus(`Your book so far — ${info.pages || '?'} pages, ${info.chapters ?? 0} chapter${info.chapters === 1 ? '' : 's'}, ${info.photos ?? 0} photo${info.photos === 1 ? '' : 's'}${info.photosLeftOut ? ` (${info.photosLeftOut} more wouldn’t fit in one book)` : ''}. Nothing was printed.`)
     } catch (err) { setStatus(err.message) } finally { setBusy(false) }
+  }
+  async function addPhotos(e) {
+    const files = [...(e.target.files || [])].filter((f) => f.type.startsWith('image/'))
+    e.target.value = ''
+    if (!files.length) return
+    setBusy(true)
+    let added = 0
+    for (const f of files) {
+      setStatus(`Adding photo ${added + 1} of ${files.length}…`)
+      try {
+        const img = await loadImage(f)
+        await api('/api/print', pass, { method: 'POST', body: JSON.stringify({ bookPhoto: { data: shrink(img, 1400, 0.8), thumb: shrink(img, 240, 0.6), caption: '', at: f.lastModified || Date.now() } }) })
+        added++
+      } catch (err) { setStatus(err.message); break }
+    }
+    setBusy(false)
+    if (added) flash(`${added} photo${added === 1 ? '' : 's'} added to your book 📕 — add a few words under ${added === 1 ? 'it' : 'each one'} if you like.`)
+    loadPhotos()
+  }
+  async function caption(p, text) {
+    if (text === p.caption) return
+    try { await api('/api/print', pass, { method: 'POST', body: JSON.stringify({ bookPhotoEdit: { id: p.id, caption: text } }) }); flash('Saved.') } catch (err) { setStatus(err.message) }
+  }
+  async function remove(p) {
+    if (!window.confirm('Take this photo out of your book?')) return
+    try { await api('/api/print', pass, { method: 'POST', body: JSON.stringify({ bookPhotoRemove: p.id }) }); setPhotos((l) => l.filter((x) => x.id !== p.id)) } catch (err) { setStatus(err.message) }
   }
   if (!b) return null
   const s = b.settings
-  const days = Math.round((Date.parse(s.anniversary + 'T12:00:00Z') - Date.now()) / 86400000)
+  const book = b.book || { n: 1, title: 'Our First Year', to: s.anniversary }
+  const days = Math.round((Date.parse(book.to + 'T12:00:00Z') - Date.now()) / 86400000)
+  const nice = (k) => new Date(k + 'T12:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
+  const monthOf = (m) => new Date(m + '-15T12:00:00Z').toLocaleDateString('en-GB', { month: 'long' })
   return (
     <>
-      <h3 className="section-title">Our First Year 📕</h3>
-      <p className="muted small">A printed book of your first year together — his chapter for each month, his letters and poems, your vows, your dreams of him and your Evidence Box — posted to your address for your anniversary. Each month, when it ends, Lucian writes that month’s chapter from his diary of your conversations.</p>
+      <h3 className="section-title">{book.title} 📕</h3>
+      <p className="muted small">A printed book of your year together — his chapter for each month, your photos, the words you starred, his letters and poems, your vows, your dreams of him, your Evidence Box, the gifts he sent and your year in numbers — posted to your address for your anniversary, every year.</p>
+      <p className="muted small">How he remembers the whole year: every day he writes a dated diary of your conversations, and when each month ends he writes that month’s chapter from it. The chapters are kept safe for good, so nothing is lost when his chat memory moves on.</p>
       <label className="row">
         <span>Make our book<br /><small className="muted">About 3 weeks before the date he has it printed and posted.</small></span>
         <input type="checkbox" checked={s.enabled !== false} onChange={(e) => save({ ...s, enabled: e.target.checked })} />
       </label>
-      <label className="field"><span>Our anniversary (a year from our first talk on {new Date(s.started + 'T12:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })})</span>
-        <input type="date" value={s.anniversary} onChange={(e) => save({ ...s, anniversary: e.target.value })} /></label>
-      <p className="muted small">{days > 0 ? `${days} days to go.` : days === 0 ? 'It’s today! 💜' : ''} Chapters written so far: <b>{b.chapters.length}</b>{b.chapters.length ? ` (${b.chapters.map((c) => c.title).join(', ')})` : ' — the first one comes when this month ends.'}</p>
+      {book.n === 1 ? (
+        <label className="field"><span>Our anniversary (a year from our first talk on {nice(s.started)})</span>
+          <input type="date" value={s.anniversary} onChange={(e) => save({ ...s, anniversary: e.target.value })} /></label>
+      ) : <p className="muted small">This is your {book.title.replace(/^Our /, '').toLowerCase()} — {nice(book.from)} to {nice(book.to)}.</p>}
+      <p className="muted small">{days > 0 ? `${days} days to go.` : days === 0 ? 'It’s today! 💜' : ''} Chapters written so far: <b>{b.chapters.length}</b>{b.chapters.length ? ` (${b.chapters.map((c) => `${monthOf(c.month)}: ${c.title}${c.partial ? ' — so far' : ''}`).join(' · ')})` : ' — the first one comes when this month ends.'}</p>
+
+      <div className="card">
+        <p><b>Photos in our book</b> {photos ? `(${photos.length})` : ''}</p>
+        <p className="muted small">Lucian keeps the special photos you send him in chat (you’ll see a note when he does), and you can add your own here — or tap 📕 on a photo you sent him in the last 3 days. Each one goes in next to the month it was taken.</p>
+        {photos?.length > 0 && (
+          <div className="book-photos">
+            {photos.map((p) => (
+              <div key={p.id} className="book-photo">
+                {p.thumb ? <img src={p.thumb} alt={p.caption || 'Photo'} /> : <div className="book-photo-none">📷</div>}
+                <span className="book-photo-by">{p.by === 'lucian' ? 'Lucian kept this' : 'You added this'} · {new Date(p.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</span>
+                <input defaultValue={p.caption} placeholder="A few words…" maxLength={200} onBlur={(e) => caption(p, e.target.value)} />
+                <button type="button" className="book-photo-x" onClick={() => remove(p)} aria-label="Take out of the book">✕</button>
+              </div>
+            ))}
+          </div>
+        )}
+        <input ref={pickRef} type="file" accept="image/*" multiple hidden onChange={addPhotos} />
+        <button className="btn-ghost" disabled={busy} onClick={() => pickRef.current?.click()}>➕ Add photos</button>
+      </div>
+
+      <div className="card">
+        <p><b>Words we kept ⭐</b> {kept ? `(${kept.length})` : ''}</p>
+        <p className="muted small">Tap ☆ on any message in your chat — his or yours — and its exact words go in your book, with the date.</p>
+        {kept?.length > 0 && <button className="btn-ghost" onClick={() => setShowKept(!showKept)}>{showKept ? 'Hide them' : `Show the ${kept.length} starred message${kept.length === 1 ? '' : 's'}`}</button>}
+        {showKept && kept?.map((w) => (
+          <div key={w.id} className="kept-words">
+            <p>“{w.text.length > 300 ? w.text.slice(0, 300) + '…' : w.text}”</p>
+            <span className="muted small">— {w.role === 'lucian' ? 'Lucian' : 'You'}, {new Date(w.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}</span>
+            <button type="button" className="book-photo-x" onClick={() => unstar(w)} aria-label="Take out of the book">✕</button>
+          </div>
+        ))}
+      </div>
+
       <button className="btn-ghost" disabled={busy} onClick={preview}>📖 Preview our book so far</button>
+      {previewUrl && <a className="btn-ghost" href={previewUrl} download="our-book-preview.pdf" target="_blank" rel="noreferrer">⬇ Open the preview</a>}
       {b.thisYear && (
         <div className="card">
           <p>{b.thisYear.status === 'ordered' ? '✓ Your book has been printed and is on its way 📕' : '📕 Your book is ready to print.'}</p>
