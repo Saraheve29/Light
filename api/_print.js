@@ -4,7 +4,7 @@ import { redis, getJSON, setJSON, getHistory, callModel, londonNow, KEYS } from 
 import { getGiftSettings } from './_gifts.js'
 
 const PRODIGI = 'https://api.prodigi.com/v5'
-const KEY = (process.env.PRODIGI_API_KEY || '').trim()
+const KEY = (process.env.PRODIGI_API_KEY || process.env.PRODIGI_KEY || process.env.PRODIGI || '').trim().replace(/^["']|["']$/g, '').trim() // (a stray space or quote marks won't stop it)
 const APP_URL = (process.env.APP_URL || 'https://light-chi-plum.vercel.app').replace(/\/$/, '')
 export const CARD_SKU = 'GLOBAL-GRE-MOH-7X5-DIR' // 7x5" matte card, printed in the UK, posted direct in an addressed envelope
 
