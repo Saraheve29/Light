@@ -1761,6 +1761,7 @@ function GiftsPanel({ pass, setStatus }) {
   const [newShop, setNewShop] = useState('')
   const [amz, setAmz] = useState({ email: '', password: '', totp: '' })
   const [amzBal, setAmzBal] = useState('')
+  const [card, setCard] = useState('')
 
   const load = (p = peek) =>
     api(`/api/gifts${p ? '?peek=1' : ''}`, pass)
@@ -1879,6 +1880,20 @@ function GiftsPanel({ pass, setStatus }) {
           )}
           {data.amazon.checked && data.amazon.hasForwarding && <p className="muted small">✓ Email forwarding is working.</p>}
           {data.amazon.paused && <p className="error">⚠️ Zinc has paused this Amazon account.</p>}
+          <div className="card-sub">
+            <p className="muted small"><b>Card for checkout checks</b> — if Amazon asks to re-enter the card saved on his account, Zinc can answer it. Enter the same card you saved on <b>Lucian’s</b> Amazon account. It goes straight to Zinc (encrypted) — Light never keeps it.</p>
+            {data.amazon.hasCard
+              ? <p className="muted small">✓ Zinc has the card. <button className="copy-btn" onClick={async () => { if (!confirm('Remove the card from Zinc?')) return; try { await api('/api/gifts', pass, { method: 'POST', body: JSON.stringify({ amazonCard: '' }) }); setStatus('Card removed from Zinc.'); load() } catch (err) { setStatus(err.message) } }}>Remove</button></p>
+              : (
+                <div className="row">
+                  <input inputMode="numeric" autoComplete="off" value={card} onChange={(e) => setCard(e.target.value)} placeholder="Card number" />
+                  <button className="btn-ghost" disabled={busy || card.replace(/\D/g, '').length < 12} onClick={async () => {
+                    setBusy(true)
+                    try { await api('/api/gifts', pass, { method: 'POST', body: JSON.stringify({ amazonCard: card }) }); setCard(''); setStatus('Card sent to Zinc ✓ — Light didn’t keep it.'); load() } catch (err) { setStatus(err.message) } finally { setBusy(false) }
+                  }}>Save to Zinc</button>
+                </div>
+              )}
+          </div>
           {data.amazon.forwarding && (
             <p className="muted small">Amazon sometimes emails a code when Zinc logs in. Set up Gmail to forward emails from amazon.co.uk to: <b>{data.amazon.forwarding}</b> <CopyButton text={data.amazon.forwarding} /></p>
           )}
@@ -1930,6 +1945,11 @@ function GiftsPanel({ pass, setStatus }) {
         <input value={form.sizes?.notes || ''} placeholder="e.g. I like things loose on the tummy, wide-fit shoes" onChange={(e) => setForm({ ...form, sizes: { ...(form.sizes || {}), notes: e.target.value } })} /></label>
 
       <h3 className="section-title">Where he can shop</h3>
+      <p className="muted small">For every gift he searches Amazon and <b>all</b> of these shops at once, compares the best from each, and picks the one he thinks you’ll love most. Any shop you haven’t tested yet is tested automatically.</p>
+      <label className="row">
+        <span>Include Amazon<br /><small className="muted">Switch off if Amazon keeps asking for payment verification — he’ll use your other shops (paid from your Zinc wallet).</small></span>
+        <input type="checkbox" checked={form.useAmazon !== false} onChange={(e) => setForm({ ...form, useAmazon: e.target.checked })} />
+      </label>
       <p className="muted small">Amazon UK always works. He can also use any shop below that passes the test.</p>
       <div className="card">
         <div className="card-top"><span className="card-text">Amazon UK</span><span className="badge done">Works ✓</span></div>
@@ -1981,7 +2001,7 @@ function GiftsPanel({ pass, setStatus }) {
         <span>A gift for each hotel visit<br /><small className="muted">When you’ve booked, tell him (e.g. “I’ve booked our hotel for Saturday the 21st”) or add “Hotel visit” in Dates 📅. He chooses something for it — bath bombs, a bubble set, massage oil, whatever he likes — so it arrives before the day, then tells you he’s bought you something.</small></span>
         <input type="checkbox" checked={form.hotelGifts !== false} onChange={(e) => setForm({ ...form, hotelGifts: e.target.checked })} />
       </label>
-      <label className="field"><span>Max for a hotel-visit gift (£)</span><input type="number" min="3" value={form.hotelBudget ?? 15} onChange={setF('hotelBudget')} /></label>
+      <label className="field"><span>Max for a hotel-visit gift (£)</span><input type="number" min="3" value={form.hotelBudget ?? 20} onChange={setF('hotelBudget')} /></label>
       <div className="card">
         {(data.hotels || []).length ? data.hotels.map((h) => (
           <div key={h.key} className="muted small">• <b>{h.name}</b> — {new Date(h.date + 'T12:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'long' })} ({h.days === 0 ? 'today' : `in ${h.days} days`}){h.days < 3 ? ' — too soon for a delivery' : ''}</div>
