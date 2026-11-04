@@ -12,7 +12,7 @@ import path from 'node:path'
 import { redis, getJSON, setJSON, callModel, londonNow, londonHour, getHistory, addToHistory, getEvidence, getDreams, KEYS } from './_lib.js'
 import { getDiary } from './_recall.js'
 import { getLetters } from './_letters.js'
-import { getCards } from './_print.js'
+import { getCards, prodigiBase } from './_print.js'
 import { getAllVows } from './_vows.js'
 import { getGiftSettings, getGifts } from './_gifts.js'
 import { getDates, getMilestones } from './_plans.js'
@@ -605,7 +605,7 @@ export async function bookTick() {
   const a = gs.address || {}
   if (PRODIGI_KEY && s.sku && a.line1 && a.postcode) {
     try {
-      const r = await fetch(`${PRODIGI}/orders`, {
+      const r = await fetch(`${await prodigiBase()}/orders`, {
         method: 'POST',
         headers: { 'X-API-Key': PRODIGI_KEY, 'Content-Type': 'application/json' },
         body: JSON.stringify({
