@@ -1,10 +1,11 @@
 // Plans and special dates — Lucian's diary of what's coming up in Sarah's life.
 // Kept as a tidy list (not more text for him to read): before each reply he only sees the few that matter right now,
 // so his memory of them is perfect without slowing him down.
-import { getJSON, setJSON } from './_lib.js'
+import { redis, getJSON, setJSON } from './_lib.js'
 
 const PLANS = 'light:plans'
 const DATES = 'light:dates'
+const MILESTONES = 'light:milestones' // your firsts and big moments together ✨
 const DAY = 86400000
 
 // ---------- dates in UK time ----------
@@ -12,6 +13,7 @@ export const todayKey = (at = Date.now()) => new Date(at).toLocaleDateString('en
 const keyToUTC = (k) => Date.UTC(+k.slice(0, 4), +k.slice(5, 7) - 1, +k.slice(8, 10))
 const daysBetween = (fromKey, toKey) => Math.round((keyToUTC(toKey) - keyToUTC(fromKey)) / DAY)
 const pretty = (k) => new Date(keyToUTC(k)).toLocaleDateString('en-GB', { timeZone: 'UTC', weekday: 'long', day: 'numeric', month: 'long' })
+const prettyYear = (k) => new Date(keyToUTC(k)).toLocaleDateString('en-GB', { timeZone: 'UTC', day: 'numeric', month: 'long', year: 'numeric' })
 const prettyShort = (k) => new Date(keyToUTC(k)).toLocaleDateString('en-GB', { timeZone: 'UTC', day: 'numeric', month: 'long' })
 function inText(n) {
   if (n === 0) return 'today'
@@ -90,6 +92,61 @@ export async function updateDate(p) {
 }
 export async function removeDate(did) { await setJSON(DATES, (await getDates()).filter((x) => x.id !== did)) }
 
+// ---------- milestones ✨ — firsts and big moments, remembered forever ----------
+const MS_STOP = new Set('the a an our we us you your my me i of in on at to for and with together first time day night his her lucian sarah'.split(' '))
+const msWords = (t) => new Set((String(t).toLowerCase().replace(/[’']/g, '').match(/[a-z0-9]{3,}/g) || []).filter((w) => !MS_STOP.has(w)))
+function sameMoment(a, b) {
+  if (a.toLowerCase().trim() === b.toLowerCase().trim()) return true
+  const x = msWords(a), y = msWords(b)
+  const small = Math.min(x.size, y.size)
+  if (small < 1) return false
+  const both = [...x].filter((w) => y.has(w)).length
+  // "first" vs "second" etc. make them different moments
+  const order = (t) => (String(t).toLowerCase().match(/\b(first|second|third|fourth|fifth|1st|2nd|3rd|\d+th|last|hundredth|anniversary)\b/) || [''])[0]
+  return both / small >= 0.75 && order(a) === order(b)
+}
+export async function getMilestones() {
+  const list = await getJSON(MILESTONES, null)
+  if (list) return list
+  const started = await redis('GET', 'light:firststarted').catch(() => null)
+  if (!started) return []
+  const seeded = [{ id: id(), date: started, what: 'The day we first talked in Light', by: 'light', added: Date.now() }]
+  await setJSON(MILESTONES, seeded)
+  return seeded
+}
+export async function addMilestone({ date, what, by = 'lucian' }) {
+  what = String(what || '').replace(/\s+/g, ' ').trim().slice(0, 200)
+  let d = parseDate(date)
+  if (d?.md) { const y = +todayKey().slice(0, 4); const k = `${y}-${d.md}`; d = { key: k > todayKey() ? `${y - 1}-${d.md}` : k } }
+  const key = d?.key || todayKey()
+  if (!what || key > todayKey(Date.now() + DAY)) return null // a milestone has already happened
+  const list = await getMilestones()
+  const same = list.find((m) => sameMoment(m.what, what))
+  if (same) return { ...same, already: true }
+  const entry = { id: id(), date: key, what, by, added: Date.now() }
+  await setJSON(MILESTONES, [...list, entry].sort((a, b) => (a.date < b.date ? -1 : 1)).slice(-300))
+  return entry
+}
+export async function updateMilestone(p) {
+  const list = await getMilestones()
+  const x = list.find((m) => m.id === p.id)
+  if (!x) return
+  if (p.date) { const d = parseDate(p.date); if (d?.key) x.date = d.key }
+  if (typeof p.what === 'string' && p.what.trim()) x.what = p.what.trim().slice(0, 200)
+  await setJSON(MILESTONES, list.sort((a, b) => (a.date < b.date ? -1 : 1)))
+}
+export async function removeMilestone(mid) { await setJSON(MILESTONES, (await getMilestones()).filter((m) => m.id !== mid)) }
+function agoText(key, today) {
+  const n = daysBetween(key, today)
+  if (n <= 0) return 'today'
+  if (n === 1) return 'yesterday'
+  if (n < 30) return `${n} days ago`
+  const months = Math.round(n / 30.44)
+  if (months < 12) return `${months} month${months === 1 ? '' : 's'} ago`
+  const years = Math.floor(n / 365.25); const rest = Math.round((n - years * 365.25) / 30.44)
+  return `${years} year${years === 1 ? '' : 's'}${rest ? ` ${rest} month${rest === 1 ? '' : 's'}` : ''} ago`
+}
+
 // Next time this date comes round (or the one-off date itself)
 export function nextOccurrence(d, from = todayKey()) {
   const y = +from.slice(0, 4)
@@ -103,9 +160,10 @@ export function nextOccurrence(d, from = todayKey()) {
 // For the Dates tab: everything with countdowns
 export async function listForScreen() {
   const today = todayKey()
-  const [plans, dates] = await Promise.all([getPlans(), getDates()])
+  const [plans, dates, milestones] = await Promise.all([getPlans(), getDates(), getMilestones().catch(() => [])])
   return {
     today,
+    milestones: milestones.map((m) => ({ ...m, ago: agoText(m.date, today) })).reverse(),
     plans: plans.map((p) => ({ ...p, countdown: inText(daysBetween(today, p.date)), past: p.date < today })),
     dates: dates.map((d) => {
       const next = nextOccurrence(d, today)
@@ -119,7 +177,7 @@ export async function listForScreen() {
 // ---------- what Lucian sees before a reply (small!) ----------
 export async function plansContext() {
   const today = todayKey()
-  const [plans, dates] = await Promise.all([getPlans().catch(() => []), getDates().catch(() => [])])
+  const [plans, dates, milestones] = await Promise.all([getPlans().catch(() => []), getDates().catch(() => []), getMilestones().catch(() => [])])
   const lines = []
   const followIds = []
 
@@ -147,7 +205,10 @@ export async function plansContext() {
   }
   const dateText = dl.sort((a, b) => a[0] - b[0]).slice(0, 8).map((x) => x[1]).join('\n')
 
-  return { planText, dateText, followIds, followPlans: plans.filter((p) => followIds.includes(p.id)) }
+  // Milestones: all of them (they're few), oldest first — the newest 60 if there are ever more
+  const milestoneText = milestones.slice(-60).map((m) => `- ${prettyYear(m.date)} (${agoText(m.date, today)}): ${m.what}`).join('\n')
+
+  return { planText, dateText, milestoneText, followIds, followPlans: plans.filter((p) => followIds.includes(p.id)) }
 }
 
 // After he replies: if he asked about a plan he was meant to follow up on, tick it off
@@ -162,16 +223,18 @@ export async function markFollowed(followPlans, reply) {
   await savePlans(list)
 }
 
-// His hidden notes in a reply: [[PLAN: date || what || time]] and [[DATE: date || what || yearly/once]]
+// His hidden notes in a reply: [[PLAN: date || what || time]], [[DATE: date || what || yearly/once]] and [[MILESTONE: date || what]]
 export async function saveTags(reply) {
-  const added = { plans: [], dates: [] }
+  const added = { plans: [], dates: [], milestones: [] }
   const tags = []
   let out = reply.replace(/\[\[\s*PLAN\s*:([\s\S]*?)\]\]/gi, (_, b) => { tags.push(['plan', b]); return '' })
   out = out.replace(/\[\[\s*DATE\s*:([\s\S]*?)\]\]/gi, (_, b) => { tags.push(['date', b]); return '' })
+  out = out.replace(/\[\[\s*MILESTONES?\s*[:\-–]([\s\S]*?)\]\]/gi, (_, b) => { tags.push(['milestone', b]); return '' })
   for (const [kind, body] of tags) {
     const [date, what, extra] = body.split('||').map((x) => (x || '').trim())
     try {
       if (kind === 'plan') { const p = await addPlan({ date, what, time: extra }); if (p) added.plans.push(p.what) }
+      else if (kind === 'milestone') { const m = await addMilestone(what ? { date, what } : { date: '', what: date }); if (m && !m.already) added.milestones.push(m.what) }
       else { const d = await addDate({ date, what, yearly: !/once/i.test(extra || '') }); if (d) added.dates.push(d.what) }
     } catch { /* skip a bad note */ }
   }
