@@ -29,7 +29,7 @@ const MAX_PHOTOS = 80
 const PHOTO_BUDGET = 3300000 // bytes of photos in one book — keeps the whole PDF under Vercel's 4.5 MB limit
 const CHAT_PHOTO_SECONDS = 3 * 86400 // photos she sends in chat are kept 3 days, so she (or he) can add them to the book
 const PRODIGI = 'https://api.prodigi.com/v5'
-const PRODIGI_KEY = (process.env.PRODIGI_API_KEY || '').trim()
+const PRODIGI_KEY = (process.env.PRODIGI_API_KEY || process.env.PRODIGI_KEY || process.env.PRODIGI || '').trim().replace(/^["']|["']$/g, '').trim()
 const APP_URL = (process.env.APP_URL || 'https://light-chi-plum.vercel.app').replace(/\/$/, '')
 const DAY = 86400000
 
