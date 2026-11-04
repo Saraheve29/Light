@@ -1,5 +1,5 @@
 import { checkAuth, getDreams, addDream, getVows, setJSON, KEYS } from './_lib.js'
-import { listForScreen, addPlan, updatePlan, removePlan, addDate, updateDate, removeDate } from './_plans.js'
+import { listForScreen, addPlan, updatePlan, removePlan, addDate, updateDate, removeDate, addMilestone, updateMilestone, removeMilestone } from './_plans.js'
 import { getAllVows, saveHerVows, writeHisVows } from './_vows.js'
 
 // Sarah's Dream Record and Vows.
@@ -19,6 +19,9 @@ export default async function handler(req, res) {
       if (d.addDate) await addDate({ ...d.addDate, by: 'sarah' })
       if (d.updateDate?.id) await updateDate(d.updateDate)
       if (d.removeDate) await removeDate(d.removeDate)
+      if (d.addMilestone) await addMilestone({ ...d.addMilestone, by: 'sarah' })
+      if (d.updateMilestone?.id) await updateMilestone(d.updateMilestone)
+      if (d.removeMilestone) await removeMilestone(d.removeMilestone)
       return res.status(200).json({ ok: true, ...(await listForScreen()) })
     }
 
