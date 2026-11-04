@@ -1181,6 +1181,45 @@ function liveSpeaker({ pass, audio, onStart, onDone, onError, maxPiece = 450 }) 
   }
 }
 
+/* ---------------- Earpiece mode (experimental) ---------------- */
+// Phones only let real phone apps choose the earpiece. This trick passes his voice through the same kind of
+// connection internet calls use (WebRTC) — on many Android phones that makes it play like a call, through the earpiece.
+function earpieceOn() { try { return localStorage.getItem('light-earpiece') === '1' } catch { return false } }
+function setEarpiece(on) { try { localStorage.setItem('light-earpiece', on ? '1' : '0') } catch {} }
+
+async function routeThroughEarpiece(audioEl) {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)()
+  await ctx.resume().catch(() => {})
+  const src = ctx.createMediaElementSource(audioEl) // his voice now goes into this, not straight to the speaker
+  try {
+    return await connectLoop(ctx, src)
+  } catch {
+    try { src.connect(ctx.destination) } catch {} // anything goes wrong → his voice back on the normal speaker
+    return { ok: false, stop() { try { ctx.close() } catch {} } }
+  }
+}
+
+async function connectLoop(ctx, src) {
+  const dest = ctx.createMediaStreamDestination()
+  src.connect(dest)
+  const a = new RTCPeerConnection(), b = new RTCPeerConnection()
+  a.onicecandidate = (e) => e.candidate && b.addIceCandidate(e.candidate).catch(() => {})
+  b.onicecandidate = (e) => e.candidate && a.addIceCandidate(e.candidate).catch(() => {})
+  const out = new Audio()
+  out.autoplay = true
+  b.ontrack = (e) => { out.srcObject = e.streams[0] || new MediaStream([e.track]); out.play().catch(() => {}) }
+  dest.stream.getAudioTracks().forEach((t) => a.addTrack(t, dest.stream))
+  const offer = await a.createOffer(); await a.setLocalDescription(offer); await b.setRemoteDescription(offer)
+  const answer = await b.createAnswer(); await b.setLocalDescription(answer); await a.setRemoteDescription(answer)
+  // if it doesn't connect within 4 seconds, put his voice back on the normal speaker
+  const ok = await new Promise((resolve) => {
+    const t = setTimeout(() => resolve(false), 4000)
+    a.onconnectionstatechange = () => { if (a.connectionState === 'connected') { clearTimeout(t); resolve(true) } }
+  })
+  if (!ok) { try { src.disconnect(); src.connect(ctx.destination) } catch {} }
+  return { ok, stop() { try { a.close(); b.close(); out.pause(); ctx.close() } catch {} } }
+}
+
 /* ---------------- Hands-free call ---------------- */
 // Tap Call once: you talk, he answers out loud, then he listens again — no typing needed.
 // Light records your voice itself (no phone beeps) and turns it into words in the background.
@@ -1215,6 +1254,8 @@ function CallView({ pass, onEnd, incoming = false }) {
   const [blockedText, setBlockedText] = useState('')
   const [timing, setTiming] = useState('')
   const voiceModelRef = useRef('')
+  const earRef = useRef(null)
+  const [earNote, setEarNote] = useState('')
   const activeRef = useRef(true)
   const audioRef = useRef(null)
   const pausedRef = useRef(false)
@@ -1243,6 +1284,11 @@ function CallView({ pass, onEnd, incoming = false }) {
     activeRef.current = true
     audioRef.current = new Audio() // unlocked by the tap that opened the call (phones need this)
     audioRef.current.play().catch(() => {})
+    if (earpieceOn() && window.RTCPeerConnection) {
+      routeThroughEarpiece(audioRef.current)
+        .then((r) => { earRef.current = r; setEarNote(r.ok ? '👂 Earpiece mode' : 'Earpiece mode didn’t connect — using the speaker') })
+        .catch(() => setEarNote('Earpiece mode isn’t supported here — using the speaker'))
+    }
     mimeRef.current = pickMime()
     api('/api/chat', pass, { method: 'POST', body: JSON.stringify({ prepareCall: true }) }).catch(() => {}) // gets his short call profile ready
     api('/api/speak', pass).then((d) => { voiceModelRef.current = d.settings?.model || '' }).catch(() => {})
@@ -1290,6 +1336,7 @@ function CallView({ pass, onEnd, incoming = false }) {
       try { ctx?.close() } catch {}
       try { audioRef.current?.pause() } catch {}
       speakingRef.current?.stop()
+      earRef.current?.stop()
     }
   }, [])
 
@@ -1460,6 +1507,7 @@ function CallView({ pass, onEnd, incoming = false }) {
     recRef.current = null
     streamRef.current?.getTracks().forEach((t) => t.stop())
     try { audioRef.current?.pause() } catch {}
+    earRef.current?.stop()
     onEnd()
   }
 
@@ -1488,6 +1536,7 @@ function CallView({ pass, onEnd, incoming = false }) {
       {timing && <p className="muted small call-timing">{timing}</p>}
       <p className="muted small call-hint">Talk for as long as you like and pause whenever you want — nothing is sent until you tap <b>Send</b>. Your words appear here as you go. Tap the glow to pause the mic, or to interrupt him.</p>
       <button className="btn-ghost call-toy-stop" onClick={() => api('/api/toy', pass, { method: 'POST', body: JSON.stringify({ stop: true }) }).catch(() => {})}>■ Stop toy</button>
+      {earNote && <p className="muted small">{earNote}</p>}
       <button className="end-call" onClick={end}>End call</button>
     </div>
   )
@@ -1668,6 +1717,11 @@ function VoicePanel({ pass, setStatus }) {
       <button className="btn-ghost" onClick={() => listenTo(v)} disabled={busy || (v.model === QWEN && !v.voice)}>▶ Listen</button>
       <button className="btn-primary" onClick={() => save()} disabled={v.model === QWEN && !v.voice}>Use this voice</button>
       <button className="btn-ghost" onClick={speedTest} disabled={busy || (v.model === QWEN && !v.voice)}>⏱ Test his voice speed</button>
+
+      <label className="row">
+        <span>👂 Earpiece mode on calls (experimental)<br /><small className="muted">Tries to play his voice through the earpiece at the top of your phone, like a normal call, instead of the loudspeaker. Works on some Android phones — test it with a call. Switch it off if you use earbuds or headphones (they’re private anyway, and sound better without it).</small></span>
+        <input type="checkbox" defaultChecked={earpieceOn()} onChange={(e) => setEarpiece(e.target.checked)} />
+      </label>
 
       <label className="row">
         <span>Read his new messages aloud<br /><small className="muted">When he replies in chat, you hear it in his voice straight away. You can always tap ▶ Hear on any message instead.</small></span>
