@@ -1,5 +1,5 @@
 import { checkAuth, setJSON, KEYS } from './_lib.js'
-import { amazonStatus, upcomingHotels, walletInfo, setAmazonBalance, upcomingOccasions, SIZE_LABELS, getAmazonLink, linkAmazon, unlinkAmazon, getGiftSettings, checkGifts, sendSurprise, missingSetup, spentThisMonth, testShop, cleanDomain, DEFAULT_GIFT_SETTINGS } from './_gifts.js'
+import { setAmazonCard, amazonStatus, upcomingHotels, walletInfo, setAmazonBalance, upcomingOccasions, SIZE_LABELS, getAmazonLink, linkAmazon, unlinkAmazon, getGiftSettings, checkGifts, sendSurprise, missingSetup, spentThisMonth, testShop, cleanDomain, DEFAULT_GIFT_SETTINGS } from './_gifts.js'
 
 // GET  → settings, gifts (details hidden unless ?peek=1), what's missing
 // POST → { settings }, { practice: true }, { sendNow: true }
@@ -18,7 +18,7 @@ export default async function handler(req, res) {
         gifts: shown,
         missing: missingSetup(settings),
         spentThisMonth: spentThisMonth(gifts),
-        amazon: amazon ? { email: amazon.email, hasTotp: amazon.hasTotp, forwarding: amazon.forwarding, at: amazon.at, checked: amazon.checked, hasForwarding: amazon.hasForwarding, paused: amazon.paused, locked: amazon.locked } : null,
+        amazon: amazon ? { email: amazon.email, hasTotp: amazon.hasTotp, forwarding: amazon.forwarding, at: amazon.at, checked: amazon.checked, hasCard: amazon.hasCard, hasForwarding: amazon.hasForwarding, paused: amazon.paused, locked: amazon.locked } : null,
         occasions: await upcomingOccasions(400).catch(() => []),
         wallet: await walletInfo(),
         hotels: await upcomingHotels(90).catch(() => []),
@@ -32,6 +32,7 @@ export default async function handler(req, res) {
         return res.status(200).json({ ok: true, amazon: { email: a.email, hasTotp: a.hasTotp, forwarding: a.forwarding, at: a.at } })
       }
       if (unlink === true) { await unlinkAmazon(); return res.status(200).json({ ok: true }) }
+      if ('amazonCard' in (req.body || {})) return res.status(200).json({ ok: true, ...(await setAmazonCard(req.body.amazonCard)) })
       if ('amazonBalance' in (req.body || {})) return res.status(200).json({ ok: true, amazonBalance: await setAmazonBalance(req.body.amazonBalance) })
 
       if (settings && typeof settings === 'object') {
@@ -59,7 +60,8 @@ export default async function handler(req, res) {
           occasions: settings.occasions ?? current.occasions ?? true,
           occasionBudget: Math.min(500, Math.max(3, Number(settings.occasionBudget ?? current.occasionBudget) || 25)),
           hotelGifts: settings.hotelGifts ?? current.hotelGifts ?? true,
-          hotelBudget: Math.min(500, Math.max(3, Number(settings.hotelBudget ?? current.hotelBudget) || 15)),
+          useAmazon: settings.useAmazon ?? current.useAmazon ?? true,
+          hotelBudget: Math.min(500, Math.max(3, Number(settings.hotelBudget ?? current.hotelBudget) || 20)),
           sizes: Object.fromEntries(Object.keys(SIZE_LABELS).map((k) => [k, String(settings.sizes?.[k] ?? current.sizes?.[k] ?? '').slice(0, k === 'notes' ? 200 : 40)])),
         }
         await setJSON(KEYS.giftSettings, clean)
