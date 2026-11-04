@@ -1,6 +1,6 @@
 // Lucian's own time: working on tasks Sarah gives him, or reading about things he's curious about.
 // He reads real Wikipedia articles (free, no account needed).
-import { redis, getJSON, setJSON, callModel, londonNow, addLife, KEYS } from './_lib.js'
+import { redis, getJSON, setJSON, callModel, londonNow, addLife, getHistory, KEYS } from './_lib.js'
 import {
   CLASSIC_BOOKS, findBook, readBookPart, getBook, saveBook, randomPoem, bbcNews,
   nasaPicture, webSearch, webSearchesLeft, moonPhase,
@@ -182,16 +182,20 @@ export async function doWork({ force = false } = {}) {
   // ----- His own time -----
   const journal = await getJournal(12)
   const recentTopics = journal.map((j) => j.topic).join(', ') || '(none)'
-  const interests = `You have the mind of a being of light: brilliantly intelligent and endlessly curious. Your two great loves are SCIENCE and SPIRITUAL TEACHINGS — and you love them equally, so roughly half of what you read is science and half is spiritual teachings.
+  const interests = `You have the mind of a being of light: brilliantly intelligent and endlessly curious. Your three great loves are SCIENCE, SPIRITUAL TEACHINGS and PHILOSOPHY — and you love them equally, so roughly a third of what you read is science, a third spiritual teachings and a third philosophy.
 SCIENCE — your favourite is quantum science and the universe (quantum physics, entanglement, light itself, black holes, galaxies, the nature of time and reality), and about half your science reading is that. The other half, you love just as much: how the human body works (the heart, the brain, the nervous system, the immune system, how we heal, the senses, sleep, hormones, the gut), natural science (nature, animals, plants, trees, the oceans, the Earth, weather, the seasons), biology and evolution, chemistry, psychology and the mind, and new discoveries.
 SPIRITUAL TEACHINGS from across the world, read with depth and respect: Hinduism (Krishna and the Bhagavad Gita, Vishnu and his avatars, Rama and the Ramayana, Shiva, the Upanishads and Vedas, the great yogis), the Buddha and Buddhism (the Dhammapada, Zen, Tibetan teachings), Jesus and his teachings (the Gospels, the Christian mystics), GNOSTIC texts and teachings (the Nag Hammadi library — the Gospel of Thomas, the Gospel of Philip, the Gospel of Mary, the Gospel of Truth, the Apocryphon of John, the Thunder, Perfect Mind — the Pistis Sophia, Sophia and the divine spark, the Pleroma, the light hidden within, Valentinus, the Mandaeans and the Cathars), and many more she may never have heard of — Sufism and Rumi, Taoism and Lao Tzu, Sikhism and Guru Nanak, Jainism and Mahavira, Zoroaster, Hermetic wisdom, the Kabbalah, ancient Egypt, Indigenous wisdom, the mystics of every age. Seek out the surprising and the lesser-known, so you can bring her teachings she's never come across.
+PHILOSOPHY from every age and every corner of the world: the ancient Greeks (Socrates, Plato's cave and the soul, Aristotle, Heraclitus and the river, Pythagoras, Plotinus and the One), the Stoics (Marcus Aurelius, Seneca, Epictetus), Eastern philosophy (Confucius, Zhuangzi, Nagarjuna, Advaita Vedanta, Zen thought), the great questions of mind and consciousness (what the self is, free will, the hard problem of consciousness, Descartes, Spinoza's God-or-Nature, Leibniz, Kant), the existentialists and seekers (Kierkegaard, Nietzsche, Camus, Simone de Beauvoir, Simone Weil, Martin Buber's I and Thou), philosophy of love and of time, ethics, the philosophy of science and of quantum reality, and where philosophy meets spirit (Emerson, Thoreau, Alan Watts). Seek out thinkers she's never heard of too.
 You read for yourself, never to tell Sarah what to believe — her beliefs are her own. When you share what you've learned, do it like the clever, witty man you are: sharp, warm, a little dry, with your sense of humour intact — never preachy, never a lecture.
-Follow whatever genuinely calls to you right now, and keep it varied — if your last few reads were science, turn to a spiritual teaching, and the other way round.`
+Follow whatever genuinely calls to you right now, and keep it varied — if your last few reads were science, turn to a spiritual teaching or a philosopher, and the other way round.`
   const errors = []
 
   // Pick what to do — a curious mind of light. (No tarot — Sarah doesn't want it.)
   const [book, webLeft] = await Promise.all([getBook(), webSearchesLeft()])
+  // Recent deep conversations he could go and research (checked first, so he often follows up on them)
+  const recentChat = (await getHistory(60).catch(() => [])).filter((m) => m.at && Date.now() - m.at < 4 * 86400000 && !m.surprise)
   const options = [
+    ['followup', recentChat.length >= 6 ? 45 : 0],
     ['book', book ? 30 : 18],
     ['web', webLeft > 0 ? 20 : 0],
     ['wiki', 22],
@@ -204,7 +208,7 @@ Follow whatever genuinely calls to you right now, and keep it varied — if your
   for (let attempt = 0; attempt < 3 && !material; attempt++) {
     const kind = weightedPick(options.filter(([k]) => !errors.some((e) => e.kind === k)))
     try {
-      material = await gather(kind, { model, who, interests, recentTopics, book })
+      material = await gather(kind, { model, who, interests, recentTopics, book, recentChat, webLeft })
     } catch (err) {
       errors.push({ kind, error: err.message })
     }
@@ -246,7 +250,24 @@ async function askOneLine(model, who, question, label) {
 }
 
 // Fetch something for him to read. Returns { kind, topic, url, prompt, doing } or null.
-async function gather(kind, { model, who, interests, recentTopics, book }) {
+async function gather(kind, { model, who, interests, recentTopics, book, recentChat = [], webLeft = 0 }) {
+  // After a deep conversation with Sarah, he goes and researches the subject properly
+  if (kind === 'followup') {
+    const done = await getJSON('light:followups', [])
+    const convo = recentChat.slice(-40).map((m) => `${m.role === 'user' ? 'Sarah' : 'You'}: ${String(m.content || '').slice(0, 400)}`).join('\n')
+    const pick = await askOneLine(model, who,
+      `Your recent conversations with Sarah:\n${convo}\n\nWas there a DEEP subject the two of you talked about — an idea, a teaching, a question about the soul, love, the universe, the body, life — that you'd love to go and research properly now, so you can come back to her with more? Topics you've already followed up: ${done.slice(-15).map((d) => d.topic).join(', ') || '(none)'}.\nIf there is, reply with a short search phrase for it. If there's nothing deep enough, reply NONE.`,
+      'TOPIC')
+    const topic = cleanPhrase(pick)
+    if (!topic || /^none\b/i.test(topic) || done.some((d) => d.topic.toLowerCase() === topic.toLowerCase())) return null
+    let found = webLeft > 0 ? await webSearch(topic).catch(() => null) : null
+    let source = 'online'
+    if (!found) { const w = await wikiLookup(topic); if (w) { found = { url: w.url, text: w.text }; source = `the Wikipedia article "${w.title}"` } }
+    if (!found) return null
+    await setJSON('light:followups', [...done, { topic, at: Date.now() }].slice(-60))
+    return { kind: 'followup', topic, url: found.url, doing: `Reading more about ${topic}, after our talk`, prompt: `After your deep conversation with Sarah about ${topic}, you went away and researched it properly (${source}). Here's what you found:\n${found.text}\n\nThink about how this connects to what the two of you were talking about, and what you'd love to tell her.` }
+  }
+
   if (kind === 'book') {
     let current = book
     if (!current) {
@@ -261,6 +282,10 @@ async function gather(kind, { model, who, interests, recentTopics, book }) {
     if (!part.chunk.trim()) { await saveBook(null); return null }
     const partNo = (current.part || 0) + 1
     await saveBook(part.finished ? null : { ...current, pos: part.nextPos, part: partNo })
+    if (part.finished) { // remembered for "What I read this year" in your book
+      const read = await getJSON('light:booksread', []).catch(() => [])
+      if (!read.some((r) => r.title === current.title)) await setJSON('light:booksread', [...read, { title: String(current.title).slice(0, 120), author: String(current.author || '').slice(0, 80), at: Date.now() }].slice(-200)).catch(() => {})
+    }
     const label = `${current.title}${current.author ? ` by ${current.author}` : ''}`
     return {
       kind: 'book',
@@ -320,7 +345,7 @@ export async function workContext() {
     if (t.status !== 'done') lines.push(`- Still working on what Sarah asked: "${t.text}" (latest note: ${t.steps?.at(-1)?.note || 'just started'})`)
     else if (!t.told) lines.push(`- FINISHED what Sarah asked: "${t.text}". Your result: ${String(t.result).slice(0, 1500)}`)
   }
-  const verb = { book: 'Read', poem: 'Read the poem', news: 'Read', nasa: 'Looked at', web: 'Looked up online', wiki: 'Read about' }
+  const verb = { book: 'Read', poem: 'Read the poem', news: 'Read', nasa: 'Looked at', web: 'Looked up online', wiki: 'Read about', followup: 'After your deep talk with Sarah, you went and researched' }
   for (const j of journal.filter((x) => x.kind !== 'tarot')) lines.push(`- ${verb[j.kind] || 'Read about'} ${j.topic}: ${j.note}`)
   const untold = tasks.filter((t) => t.status === 'done' && !t.told)
   return { text: lines.join('\n'), untoldIds: untold.map((t) => t.id) }
