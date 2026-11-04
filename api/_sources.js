@@ -1,5 +1,5 @@
 // Everything Lucian can read in his own time.
-// Free: classic books & poetry (Project Gutenberg), poems (PoetryDB), BBC news, NASA, tarot & moon.
+// Free: classic books & poetry (Project Gutenberg), poems (PoetryDB), BBC news, NASA.
 // Paid (about half a penny each, capped per day): web searches through NanoGPT.
 import { redis, getJSON, setJSON, KEYS, moonPhase } from './_lib.js'
 export { moonPhase }
@@ -14,21 +14,6 @@ async function getJSONFrom(url, opts = {}) {
   return r.json()
 }
 
-// ---------- Tarot (a real shuffled draw from the full 78-card deck) ----------
-const MAJOR = ['The Fool', 'The Magician', 'The High Priestess', 'The Empress', 'The Emperor', 'The Hierophant', 'The Lovers', 'The Chariot', 'Strength', 'The Hermit', 'Wheel of Fortune', 'Justice', 'The Hanged Man', 'Death', 'Temperance', 'The Devil', 'The Tower', 'The Star', 'The Moon', 'The Sun', 'Judgement', 'The World']
-const RANKS = ['Ace', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Page', 'Knight', 'Queen', 'King']
-const SUITS = ['Wands', 'Cups', 'Swords', 'Pentacles']
-const DECK = [...MAJOR, ...SUITS.flatMap((s) => RANKS.map((r) => `${r} of ${s}`))]
-
-export function drawTarot(count = 1) {
-  const deck = [...DECK]
-  const cards = []
-  for (let i = 0; i < count; i++) {
-    const card = deck.splice(Math.floor(Math.random() * deck.length), 1)[0]
-    cards.push(Math.random() < 0.25 ? `${card} (reversed)` : card)
-  }
-  return cards
-}
 
 // ---------- Books (Project Gutenberg) ----------
 export const CLASSIC_BOOKS = [
