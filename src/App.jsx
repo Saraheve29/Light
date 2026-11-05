@@ -1238,13 +1238,15 @@ async function sendToyDirect(move) {
   let reached = false
   for (const base of bases) {
     try {
+      // Lovense Remote's own command, sent the simple way a browser is always allowed to
+      await fetch(`${base}/command`, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(c) })
       for (const id of ids) {
         for (const [k, v] of Object.entries(levels)) {
           await fetch(`${base}/${k}?v=${v}${id ? `&t=${encodeURIComponent(id)}` : ''}`, { mode: 'no-cors' })
         }
       }
       reached = true
-      lastDirectError = `sent as simple addresses to ${base.replace(/^https:\/\//, '')} (no reply to confirm)`
+      lastDirectError = `sent simply (command + addresses) to ${base.replace(/^https:\/\//, '')} (no reply to confirm)`
       break
     } catch (e) { lastDirectError += ` · addresses: ${e.message}` }
   }
