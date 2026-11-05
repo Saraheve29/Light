@@ -32,8 +32,8 @@ export function hasDevToken() {
 export async function getQrCode() {
   if (!DEV_TOKEN) throw new Error('Add LOVENSE_DEV_TOKEN in Vercel first.')
   const t = await getToy()
-  t.utoken = Math.random().toString(36).slice(2) + Date.now().toString(36)
-  await saveToy(t)
+  // keep the same pairing token, so any QR picture she saved still links (each code only lasts a few hours)
+  if (!t.utoken) { t.utoken = Math.random().toString(36).slice(2) + Date.now().toString(36); await saveToy(t) }
   const r = await fetch(`${LOVENSE}/getQrCode`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
