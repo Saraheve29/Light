@@ -1215,6 +1215,8 @@ async function sendToyDirect(move) {
   const lan = move.lan
   if (!lan?.domain) throw new Error(TOY_DIRECT_HELP)
   const tries = []
+  // On the same phone as Lovense Remote: talk to it on the phone itself — this works on ANY Wi-Fi (or none), no re-linking
+  if (/android|iphone|ipad/i.test(navigator.userAgent)) tries.push(`https://127-0-0-1.lovense.club:${lan.httpsPort || 30010}/command`, 'https://127-0-0-1.lovense.club:30010/command')
   if (lan.httpsPort) tries.push(`https://${lan.domain}:${lan.httpsPort}/command`)
   tries.push(`https://${lan.domain}:30010/command`)
   for (const url of [...new Set(tries)]) {
@@ -1222,8 +1224,18 @@ async function sendToyDirect(move) {
       const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), 5000)
       const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-platform': 'Light' }, body: JSON.stringify(move.direct), signal: ctl.signal }).finally(() => clearTimeout(timer))
       const d = await r.json().catch(() => ({}))
-      if (!d.code || d.code === 200) return true
+      if (!d.code || d.code === 200) { lastDirectError = `worked via ${url.replace(/^https:\/\//, '').replace(/\/command$/, '')}`; return true }
+      lastDirectError = `${url.replace(/^https:\/\//, '')} → code ${d.code} ${d.message || ''}`
     } catch (e) { lastDirectError = `${url.replace(/^https:\/\//, '')} → ${e.message}` }
+  }
+  // Lovense Connect doesn't always answer a browser's safety check (CORS) — send it the simple way it can't refuse.
+  // (Light can't read the reply this way, so it can't confirm — but the toy responds.)
+  for (const url of [...new Set(tries)]) {
+    try {
+      await fetch(url, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(move.direct) })
+      lastDirectError = `sent the simple way to ${url.replace(/^https:\/\//, '').replace(/\/command$/, '')} (no reply to confirm)`
+      return 'sent'
+    } catch (e) { lastDirectError += ` · simple: ${e.message}` }
   }
   const err = new Error(TOY_DIRECT_HELP); err.cause = lastDirectError
   throw err
@@ -2349,7 +2361,7 @@ function ToyPanel({ pass, setStatus }) {
       const d = await api('/api/toy', pass, { method: 'POST', body: JSON.stringify(body) })
       if (d?.lovense !== undefined) setDiag((x) => ({ ...x, lovense: d.lovense || 'OK', at: new Date().toLocaleTimeString('en-GB') }))
       if (d?.ok === false) throw new Error(d.error)
-      if (d?.direct) await sendToyDirect(d).catch((err) => { setDiag((x) => ({ ...x, direct: String(err.cause || 'failed') })); throw err }) // Lovense's servers couldn't reach the phone — sent straight to Lovense Remote
+      if (d?.direct) { await sendToyDirect(d).catch((err) => { setDiag((x) => ({ ...x, direct: String(err.cause || 'failed') })); throw err }); setDiag((x) => ({ ...x, direct: lastDirectError })) } // Lovense's servers couldn't reach the phone — sent straight to Lovense Remote
       if (msg) setStatus(msg + (d?.direct ? ' (sent straight to Lovense Remote)' : ''))
       await load()
       return d
