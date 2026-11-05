@@ -42,7 +42,13 @@ export async function getQrCode() {
   const d = await r.json().catch(() => ({}))
   const qr = d.data?.qr || d.message?.qr
   if (!qr) throw new Error('Lovense didn’t send a QR code: ' + (d.message || d.code || `status ${r.status}`))
-  return { qr, code: d.data?.code || '' }
+  // A copy of the picture itself, so Light on her phone can read the link inside it (no second screen needed)
+  let qrData = ''
+  try {
+    const img = await fetch(qr)
+    if (img.ok) qrData = `data:${img.headers.get('content-type') || 'image/png'};base64,${Buffer.from(await img.arrayBuffer()).toString('base64')}`
+  } catch { /* the picture link still works */ }
+  return { qr, qrData, code: d.data?.code || '' }
 }
 
 // Step 2: Lovense Remote tells us which toys are connected (called by Lovense, not by Sarah)
