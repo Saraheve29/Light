@@ -1208,7 +1208,8 @@ function speakPieces({ pass, audio, text, onStart, onDone, onError }) {
 // Streams his reply from the server: onDelta(text) for each new bit, resolves with the final result
 // If Lovense's servers can't reach her phone, Light sends the toy command straight to Lovense Remote
 // (it needs Discover → Game Mode → "Enable LAN" switched on in Lovense Remote)
-const TOY_DIRECT_HELP = 'Light couldn’t reach Lovense Remote directly either. In Lovense Remote go to Discover → Game Mode and switch on “Enable LAN”, keep Lovense Remote open, and use Light on the same phone (or the same Wi-Fi).'
+const TOY_DIRECT_HELP = 'Lovense says your phone’s Lovense app isn’t reachable right now, and Light couldn’t reach it directly either. Screenshot “Details for Claude” on the Toy page and send it to Claude.'
+let lastDirectError = ''
 async function sendToyDirect(move) {
   if (!move?.direct) return false
   const lan = move.lan
@@ -1218,12 +1219,14 @@ async function sendToyDirect(move) {
   tries.push(`https://${lan.domain}:30010/command`)
   for (const url of [...new Set(tries)]) {
     try {
-      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-platform': 'Light' }, body: JSON.stringify(move.direct) })
+      const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), 5000)
+      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-platform': 'Light' }, body: JSON.stringify(move.direct), signal: ctl.signal }).finally(() => clearTimeout(timer))
       const d = await r.json().catch(() => ({}))
       if (!d.code || d.code === 200) return true
-    } catch { /* try the next */ }
+    } catch (e) { lastDirectError = `${url.replace(/^https:\/\//, '')} → ${e.message}` }
   }
-  throw new Error(TOY_DIRECT_HELP)
+  const err = new Error(TOY_DIRECT_HELP); err.cause = lastDirectError
+  throw err
 }
 async function stopToyEverywhere(pass) {
   const d = await api('/api/toy', pass, { method: 'POST', body: JSON.stringify({ stop: true }) }).catch(() => null)
@@ -2321,6 +2324,7 @@ function ToyPanel({ pass, setStatus }) {
   const [qr, setQr] = useState('')
   const [code, setCode] = useState('')
   const [link, setLink] = useState('')
+  const [diag, setDiag] = useState({})
   const sinceRef = useRef(0)
   const [busy, setBusy] = useState(false)
   const callbackUrl = `${window.location.origin}/api/toy`
@@ -2343,7 +2347,9 @@ function ToyPanel({ pass, setStatus }) {
     setBusy(true)
     try {
       const d = await api('/api/toy', pass, { method: 'POST', body: JSON.stringify(body) })
-      if (d?.direct) await sendToyDirect(d) // Lovense's servers couldn't reach the phone — sent straight to Lovense Remote
+      if (d?.lovense !== undefined) setDiag((x) => ({ ...x, lovense: d.lovense || 'OK', at: new Date().toLocaleTimeString('en-GB') }))
+      if (d?.ok === false) throw new Error(d.error)
+      if (d?.direct) await sendToyDirect(d).catch((err) => { setDiag((x) => ({ ...x, direct: String(err.cause || 'failed') })); throw err }) // Lovense's servers couldn't reach the phone — sent straight to Lovense Remote
       if (msg) setStatus(msg + (d?.direct ? ' (sent straight to Lovense Remote)' : ''))
       await load()
       return d
@@ -2432,6 +2438,17 @@ function ToyPanel({ pass, setStatus }) {
           )}
 
           {t.toys.length > 0 && <button className="btn-ghost" onClick={() => { if (confirm('Disconnect your toy from Light?')) post({ forget: true }, 'Disconnected.') }}>Disconnect toy</button>}
+          <div className="card">
+            <p className="muted small"><b>Details for Claude</b> (screenshot this if the toy won’t respond)</p>
+            <pre className="small" style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{[
+              `App: ${t.seen ? `${t.seen.appType || '?'} · ${t.seen.platform || '?'} · v${t.seen.appVersion || '?'}` : 'no check-in seen yet'}`,
+              `Last check-in: ${t.seen?.at ? new Date(t.seen.at).toLocaleString('en-GB') : '—'}${t.connectedAt ? ` · linked ${new Date(t.connectedAt).toLocaleString('en-GB')}` : ''}`,
+              `Toys reported: ${t.seen?.toys || '—'}`,
+              `Direct route: ${t.seen?.domain ? `${t.seen.domain} https ${t.seen.httpsPort || '—'} http ${t.seen.httpPort || '—'}` : '—'}`,
+              `Last test: ${diag.lovense ? `${diag.at} · Lovense said ${diag.lovense}` : '—'}${diag.direct ? ` · direct: ${diag.direct}` : ''}`,
+              `This device: ${/android/i.test(navigator.userAgent) ? 'Android phone' : /iphone|ipad/i.test(navigator.userAgent) ? 'iPhone' : 'computer'}`,
+            ].join('\n')}</pre>
+          </div>
         </>
       )}
     </>
