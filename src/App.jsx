@@ -2292,6 +2292,7 @@ function GiftsPanel({ pass, setStatus }) {
 function ToyPanel({ pass, setStatus }) {
   const [t, setT] = useState(null)
   const [qr, setQr] = useState('')
+  const [code, setCode] = useState('')
   const [busy, setBusy] = useState(false)
   const callbackUrl = `${window.location.origin}/api/toy`
 
@@ -2320,7 +2321,7 @@ function ToyPanel({ pass, setStatus }) {
 
   async function pair() {
     const d = await post({ pair: true })
-    if (d?.qr) { setQr(d.qr); setStatus('Scan this with the Lovense Remote app.') }
+    if (d?.qr) { setQr(d.qr); setCode(d.code || ''); setStatus('Scan this with the Lovense Remote app.') }
   }
 
   if (!t) return <p className="muted">Loading…</p>
@@ -2355,7 +2356,9 @@ function ToyPanel({ pass, setStatus }) {
           {qr && (
             <div className="card qr-card">
               <img src={qr} alt="QR code to connect your toy" />
-              <p className="muted small">Open <b>Lovense Remote</b>, make sure your toy is on and connected there, then tap the scan icon and scan this code. This page updates by itself.</p>
+              <p className="muted small">In <b>Lovense Remote</b> (toy on and connected there), go to <b>Discover → Scan QR</b> and scan this code. This page updates by itself.</p>
+              {code && <p className="small">Only have one phone? Lovense may let you type this code instead: <b className="code">{code}</b> <CopyButton text={code} /></p>}
+              <a className="btn-ghost" href={qr} target="_blank" rel="noreferrer" download="lovense-qr.png">Open / save the QR picture</a>
             </div>
           )}
 
