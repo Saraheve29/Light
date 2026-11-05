@@ -62,6 +62,9 @@ export async function handleCallback(body) {
   // Lovense checks in often — only save when something actually changed, to protect the free Upstash allowance
   const changed = JSON.stringify(toys) !== JSON.stringify(t.toys || {})
   const stale = Date.now() - (t.connectedAt || 0) > 10 * 60 * 1000
+  // what the app said about itself, for troubleshooting (no secrets)
+  const seen = { at: Date.now(), appType: body.appType || '', platform: body.platform || '', appVersion: body.appVersion || body.version || '', domain: body.domain || '', httpsPort: body.httpsPort || '', httpPort: body.httpPort || '', toys: Object.values(body.toys || {}).map((x) => `${x.name}:${x.status}`).join(', ') }
+  if (JSON.stringify({ ...seen, at: 0 }) !== JSON.stringify({ ...(t.seen || {}), at: 0 })) { t.seen = seen; await saveToy(t) }
   if (!changed && !stale && t.pairedWith === body.utoken) return true // (a fresh scan always counts)
   t.pairedWith = body.utoken
   // the direct route to Lovense Remote on her phone (used when Lovense's servers say the app is offline)
@@ -73,6 +76,7 @@ export async function handleCallback(body) {
 }
 
 // Lovense has two addresses for commands — if one says the app is offline, try the other before giving up
+export let lastReply = ''
 const COMMAND_URLS = [
   ['https://api.lovense-api.com/api/lan/v2/command', 1],
   ['https://api.lovense.com/api/lan/v2/command', 2],
@@ -89,6 +93,7 @@ async function command(body) {
     const d = r ? await r.json().catch(() => ({})) : { message: 'Couldn’t reach Lovense' }
     if (!d.code || d.code === 200) return d
     last = d
+    lastReply = `${url.includes('lovense-api') ? 'A' : 'B'}${apiVer}: ${d.code} ${String(d.message || '').slice(0, 80)}`
     if (!/offline|not online|timeout/i.test(String(d.message || ''))) break // a different problem — no point trying again
   }
   const msg = String(last?.message || `code ${last?.code}`)
