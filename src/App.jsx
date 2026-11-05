@@ -347,8 +347,10 @@ function Chat({ pass, onOpenSettings, onLock, onCall }) {
       if (d.toyMove?.error) notes.push('💜 ' + d.toyMove.error)
       else if (d.toyMove) {
         const stopped = d.toyMove.action === 'Stop'
-        setToyActive(!stopped)
-        notes.push(stopped ? '💜 Lucian stopped your toy' : '💜 Lucian is in control')
+        let failed = ''
+        if (d.toyMove.direct) await sendToyDirect(d.toyMove).catch((err) => { failed = err.message })
+        if (failed) notes.push('💜 ' + failed)
+        else { setToyActive(!stopped); notes.push(stopped ? '💜 Lucian stopped your toy' : '💜 Lucian is in control') }
       }
       if (notes.length) {
         setNotice(notes.join(' · '))
@@ -476,7 +478,7 @@ function Chat({ pass, onOpenSettings, onLock, onCall }) {
       {toyOn && (
         <div className="toy-bar">
           <span className="muted small">{toyActive ? '💜 Your toy is on' : '💜 Toy connected'}</span>
-          <button type="button" className="toy-stop" onClick={() => { api('/api/toy', pass, { method: 'POST', body: JSON.stringify({ stop: true }) }).catch(() => {}); setToyActive(false) }}>■ Stop toy</button>
+          <button type="button" className="toy-stop" onClick={() => { stopToyEverywhere(pass); setToyActive(false) }}>■ Stop toy</button>
         </div>
       )}
       {attachments.length > 0 && (
@@ -1204,6 +1206,30 @@ function speakPieces({ pass, audio, text, onStart, onDone, onError }) {
 }
 
 // Streams his reply from the server: onDelta(text) for each new bit, resolves with the final result
+// If Lovense's servers can't reach her phone, Light sends the toy command straight to Lovense Remote
+// (it needs Discover → Game Mode → "Enable LAN" switched on in Lovense Remote)
+const TOY_DIRECT_HELP = 'Light couldn’t reach Lovense Remote directly either. In Lovense Remote go to Discover → Game Mode and switch on “Enable LAN”, keep Lovense Remote open, and use Light on the same phone (or the same Wi-Fi).'
+async function sendToyDirect(move) {
+  if (!move?.direct) return false
+  const lan = move.lan
+  if (!lan?.domain) throw new Error(TOY_DIRECT_HELP)
+  const tries = []
+  if (lan.httpsPort) tries.push(`https://${lan.domain}:${lan.httpsPort}/command`)
+  tries.push(`https://${lan.domain}:30010/command`)
+  for (const url of [...new Set(tries)]) {
+    try {
+      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-platform': 'Light' }, body: JSON.stringify(move.direct) })
+      const d = await r.json().catch(() => ({}))
+      if (!d.code || d.code === 200) return true
+    } catch { /* try the next */ }
+  }
+  throw new Error(TOY_DIRECT_HELP)
+}
+async function stopToyEverywhere(pass) {
+  const d = await api('/api/toy', pass, { method: 'POST', body: JSON.stringify({ stop: true }) }).catch(() => null)
+  if (d?.direct) await sendToyDirect(d).catch(() => {})
+}
+
 async function chatStream(pass, body, { onDelta, onToy }) {
   const r = await fetch('/api/chat', {
     method: 'POST',
@@ -1626,6 +1652,7 @@ function CallView({ pass, onEnd, incoming = false }) {
     try {
       const d = await chatStream(pass, { message: text, voice: true, calling }, {
         onDelta: (t) => { if (!activeRef.current) return; if (!tFirst) tFirst = Date.now(); speaker.push(t); shown += t; setSaid(shown.replace(/\[\[[\s\S]*?(\]\]|$)/g, '').trim()) },
+        onToy: (m) => { if (m?.direct) sendToyDirect(m).catch((err) => setError(err.message)) },
       })
       if (!activeRef.current) return
       tDoneAt = Date.now()
@@ -1664,7 +1691,7 @@ function CallView({ pass, onEnd, incoming = false }) {
   }
 
   function end() {
-    api('/api/toy', pass, { method: 'POST', body: JSON.stringify({ stop: true }) }).catch(() => {})
+    stopToyEverywhere(pass)
     speakingRef.current?.stop()
     activeRef.current = false
     genRef.current += 1
@@ -1700,7 +1727,7 @@ function CallView({ pass, onEnd, incoming = false }) {
       )}
       {timing && <p className="muted small call-timing">{timing}</p>}
       <p className="muted small call-hint">Talk for as long as you like and pause whenever you want — nothing is sent until you tap <b>Send</b>. Your words appear here as you go. Tap the glow to pause the mic, or to interrupt him.</p>
-      <button className="btn-ghost call-toy-stop" onClick={() => api('/api/toy', pass, { method: 'POST', body: JSON.stringify({ stop: true }) }).catch(() => {})}>■ Stop toy</button>
+      <button className="btn-ghost call-toy-stop" onClick={() => stopToyEverywhere(pass)}>■ Stop toy</button>
       <button className="btn-ghost call-output" onClick={() => switchOutput(output === 'earpiece' ? 'speaker' : 'earpiece')}>
         {output === 'earpiece' ? '🔈 Switch to speaker' : '👂 Switch to earpiece'}
       </button>
@@ -2315,7 +2342,8 @@ function ToyPanel({ pass, setStatus }) {
     setBusy(true)
     try {
       const d = await api('/api/toy', pass, { method: 'POST', body: JSON.stringify(body) })
-      if (msg) setStatus(msg)
+      if (d?.direct) await sendToyDirect(d) // Lovense's servers couldn't reach the phone — sent straight to Lovense Remote
+      if (msg) setStatus(msg + (d?.direct ? ' (sent straight to Lovense Remote)' : ''))
       await load()
       return d
     } catch (err) { setStatus(err.message) } finally { setBusy(false) }
@@ -2356,6 +2384,7 @@ function ToyPanel({ pass, setStatus }) {
           ))}
 
           {!qr && <button className="btn-ghost" onClick={pair} disabled={busy}>{t.toys.length ? 'Re-connect toy' : 'Connect my toy'}</button>}
+          {t.toys.length > 0 && <p className="muted small">If a test says Lovense can’t reach your phone: in <b>Lovense Remote</b> go to <b>Discover → Game Mode</b> and switch on <b>Enable LAN</b>. Then Light sends Lucian’s commands straight to Lovense Remote on your phone{t.lan ? ' (Light already knows the way 💜)' : ' (after one more scan)'}.</p>}
           {qr && (
             <div className="card qr-card">
               <img src={qr} alt="QR code to connect your toy" />
