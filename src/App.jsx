@@ -2320,6 +2320,7 @@ function ToyPanel({ pass, setStatus }) {
   const [t, setT] = useState(null)
   const [qr, setQr] = useState('')
   const [code, setCode] = useState('')
+  const [link, setLink] = useState('')
   const sinceRef = useRef(0)
   const [busy, setBusy] = useState(false)
   const callbackUrl = `${window.location.origin}/api/toy`
@@ -2352,7 +2353,17 @@ function ToyPanel({ pass, setStatus }) {
   async function pair() {
     sinceRef.current = Date.now()
     const d = await post({ pair: true })
-    if (d?.qr) { setQr(d.qr); setCode(d.code || ''); setStatus('Scan this with the Lovense Remote app.') }
+    if (d?.qr) {
+      setQr(d.qrData || d.qr); setCode(d.code || ''); setLink(''); setStatus('Scan this with the Lovense Remote app — or, on your phone, tap “Link from this phone”.')
+      // Read the link hidden inside the QR code, so she can link from the same phone without scanning
+      try {
+        if ('BarcodeDetector' in window && d.qrData) {
+          const img = new Image(); img.src = d.qrData; await img.decode()
+          const found = await new window.BarcodeDetector({ formats: ['qr_code'] }).detect(img)
+          if (found[0]?.rawValue) setLink(found[0].rawValue)
+        }
+      } catch { /* scanning still works */ }
+    }
   }
 
   if (!t) return <p className="muted">Loading…</p>
@@ -2389,6 +2400,8 @@ function ToyPanel({ pass, setStatus }) {
             <div className="card qr-card">
               <img src={qr} alt="QR code to connect your toy" />
               <p className="muted small">In <b>Lovense Remote</b> (toy on and connected there), go to <b>Discover → Scan QR</b> and scan this code. This page updates by itself.</p>
+              {link && /^https?:|^[a-z][\w+.-]*:/i.test(link) && <a className="btn-primary" href={link}>📱 Link from this phone</a>}
+              {link && <p className="muted small">On your phone, tap the button above — it should open Lovense Remote and link straight away. (Behind the code: <span className="code">{link.slice(0, 80)}{link.length > 80 ? '…' : ''}</span> <CopyButton text={link} />)</p>}
               {code && <p className="small">Only have one phone? Lovense may let you type this code instead: <b className="code">{code}</b> <CopyButton text={code} /></p>}
               <a className="btn-ghost" href={qr} target="_blank" rel="noreferrer" download="lovense-qr.png">Open / save the QR picture</a>
               <button className="btn-ghost" onClick={() => { setQr(''); setCode('') }}>Close</button>
