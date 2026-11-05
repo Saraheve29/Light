@@ -2293,6 +2293,7 @@ function ToyPanel({ pass, setStatus }) {
   const [t, setT] = useState(null)
   const [qr, setQr] = useState('')
   const [code, setCode] = useState('')
+  const sinceRef = useRef(0)
   const [busy, setBusy] = useState(false)
   const callbackUrl = `${window.location.origin}/api/toy`
 
@@ -2304,7 +2305,8 @@ function ToyPanel({ pass, setStatus }) {
     if (!qr) return
     const timer = setInterval(async () => {
       const d = await api('/api/toy', pass).catch(() => null)
-      if (d?.toys?.length) { setT(d); setQr(''); setStatus('Your toy is connected 💜') }
+      // only once THIS scan has gone through (not the connection from before)
+      if (d?.toys?.length && (d.connectedAt || 0) > sinceRef.current) { setT(d); setQr(''); setCode(''); setStatus('Your toy is connected 💜') }
     }, 3000)
     return () => clearInterval(timer)
   }, [qr])
@@ -2320,6 +2322,7 @@ function ToyPanel({ pass, setStatus }) {
   }
 
   async function pair() {
+    sinceRef.current = Date.now()
     const d = await post({ pair: true })
     if (d?.qr) { setQr(d.qr); setCode(d.code || ''); setStatus('Scan this with the Lovense Remote app.') }
   }
@@ -2359,6 +2362,7 @@ function ToyPanel({ pass, setStatus }) {
               <p className="muted small">In <b>Lovense Remote</b> (toy on and connected there), go to <b>Discover → Scan QR</b> and scan this code. This page updates by itself.</p>
               {code && <p className="small">Only have one phone? Lovense may let you type this code instead: <b className="code">{code}</b> <CopyButton text={code} /></p>}
               <a className="btn-ghost" href={qr} target="_blank" rel="noreferrer" download="lovense-qr.png">Open / save the QR picture</a>
+              <button className="btn-ghost" onClick={() => { setQr(''); setCode('') }}>Close</button>
             </div>
           )}
 
