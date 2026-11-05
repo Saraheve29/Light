@@ -2433,6 +2433,17 @@ function ToyPanel({ pass, setStatus }) {
 
       {t.hasDevToken && (
         <>
+          <div className="card">
+            <p><b>✅ What works (tested 5 November)</b></p>
+            <ol className="small" style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+              <li><b>Lovense Connect</b> on your phone (close Lovense Remote — only one app can hold the toy)</li>
+              <li><b>VPN on</b> (Proton VPN)</li>
+              <li><b>Mobile data on, Wi-Fi off</b></li>
+              <li>Velvo on and showing connected in Lovense Connect</li>
+              <li>If Lucian can’t control it: <b>Re-connect toy</b> on the laptop and scan the code with Lovense Connect</li>
+            </ol>
+            <p className="muted small">Toy slow to connect? Turn the velvo off and on. Keep Bluetooth on and Power saving off.</p>
+          </div>
           <h3 className="section-title">Your toy</h3>
           {t.toys.length === 0 && <p className="muted">No toy connected yet.</p>}
           {t.toys.map((x) => (
