@@ -1228,6 +1228,33 @@ async function sendToyDirect(move) {
       lastDirectError = `${url.replace(/^https:\/\//, '')} → code ${d.code} ${d.message || ''}`
     } catch (e) { lastDirectError = `${url.replace(/^https:\/\//, '')} → ${e.message}` }
   }
+  // Lovense Connect also understands simple web addresses like /Vibrate?v=5 — the kind a browser can always send
+  const levels = { Vibrate: 0, Rotate: 0 }
+  const c = move.direct
+  if (c.command === 'Function' && c.action !== 'Stop') for (const part of String(c.action).split(',')) { const [k, v] = part.split(':'); if (k in levels) levels[k] = Number(v) || 0 }
+  if (c.command === 'Preset') { const p = { pulse: 8, wave: 10, fireworks: 16, earthquake: 18 }[c.name] || 10; levels.Vibrate = p; levels.Rotate = Math.round(p * 0.7) }
+  const bases = [...new Set(tries.map((u) => u.replace(/\/command$/, '')))]
+  const ids = (lan.toyIds || []).length ? lan.toyIds : ['']
+  let reached = false
+  for (const base of bases) {
+    try {
+      for (const id of ids) {
+        for (const [k, v] of Object.entries(levels)) {
+          await fetch(`${base}/${k}?v=${v}${id ? `&t=${encodeURIComponent(id)}` : ''}`, { mode: 'no-cors' })
+        }
+      }
+      reached = true
+      lastDirectError = `sent as simple addresses to ${base.replace(/^https:\/\//, '')} (no reply to confirm)`
+      break
+    } catch (e) { lastDirectError += ` · addresses: ${e.message}` }
+  }
+  if (reached) {
+    // these simple commands don't stop by themselves — Light stops them when the time's up
+    clearTimeout(window.__toyStopTimer)
+    const secs = Number(c.timeSec) || 0
+    if (secs > 0 && (levels.Vibrate || levels.Rotate)) window.__toyStopTimer = setTimeout(() => sendToyDirect({ direct: { command: 'Function', action: 'Stop', timeSec: 0 }, lan }).catch(() => {}), secs * 1000)
+    return 'sent'
+  }
   // Lovense Connect doesn't always answer a browser's safety check (CORS) — send it the simple way it can't refuse.
   // (Light can't read the reply this way, so it can't confirm — but the toy responds.)
   for (const url of [...new Set(tries)]) {
