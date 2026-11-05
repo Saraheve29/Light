@@ -1,5 +1,5 @@
 import { checkAuth } from './_lib.js'
-import { getToy, saveToy, getQrCode, handleCallback, stopToy, runMove, toyReady, hasDevToken, maxSecondsFor } from './_toy.js'
+import { getToy, saveToy, getQrCode, handleCallback, stopToy, runMove, toyReady, hasDevToken, maxSecondsFor, lastReply } from './_toy.js'
 
 // GET  → toy status
 // POST → { pair: true } QR code | { allowed: bool } | { stop: true } | { test: 'vibrate'|'rotate' } | { forget: true }
@@ -22,6 +22,7 @@ export default async function handler(req, res) {
         toys: Object.values(t.toys || {}),
         connectedAt: t.connectedAt,
         lan: t.lan || null,
+        seen: t.seen || null,
         ready: toyReady(t),
         lastCommand: t.lastCommand,
         maxSeconds: maxSecondsFor(t),
@@ -52,7 +53,9 @@ export default async function handler(req, res) {
 
       if (test) {
         const move = test === 'rotate' ? { rotate: 4, seconds: 3 } : { vibrate: 4, seconds: 3 }
-        return res.status(200).json({ ok: true, ...((await runMove(move)) || {}) })
+        try {
+          return res.status(200).json({ ok: true, ...((await runMove(move)) || {}), lovense: lastReply })
+        } catch (err) { return res.status(200).json({ ok: false, error: err.message, lovense: lastReply }) }
       }
 
       if (forget) {
