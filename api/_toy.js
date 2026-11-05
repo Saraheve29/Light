@@ -32,8 +32,10 @@ export function hasDevToken() {
 export async function getQrCode() {
   if (!DEV_TOKEN) throw new Error('Add LOVENSE_DEV_TOKEN in Vercel first.')
   const t = await getToy()
-  // keep the same pairing token, so any QR picture she saved still links (each code only lasts a few hours)
-  if (!t.utoken) { t.utoken = Math.random().toString(36).slice(2) + Date.now().toString(36); await saveToy(t) }
+  // a fresh pairing code every time (Lovense ignores a code it has already used) — the last few still count, for saved QR pictures
+  t.utoken = Math.random().toString(36).slice(2) + Date.now().toString(36)
+  t.recentTokens = [...(t.recentTokens || []), t.utoken].slice(-5)
+  await saveToy(t)
   const r = await fetch(`${LOVENSE}/getQrCode`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -54,7 +56,8 @@ export async function getQrCode() {
 // Step 2: Lovense Remote tells us which toys are connected (called by Lovense, not by Sarah)
 export async function handleCallback(body) {
   const t = await getToy()
-  if (!body || !t.utoken || body.utoken !== t.utoken || String(body.uid) !== UID) return false
+  const known = [t.utoken, ...(t.recentTokens || [])].filter(Boolean)
+  if (!body || !known.length || !known.includes(body.utoken) || String(body.uid) !== UID) return false
   const toys = {}
   for (const [id, toy] of Object.entries(body.toys || {})) {
     toys[id] = { id, name: toy.nickName || toy.name || 'Toy', type: toy.name || toy.toyType || '', status: toy.status }
