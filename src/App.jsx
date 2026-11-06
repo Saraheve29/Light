@@ -2336,7 +2336,7 @@ function GiftsPanel({ pass, setStatus }) {
             <span className={`badge ${g.status === 'ordered' ? 'done' : g.status === 'ordering' ? 'working' : ''}`}>{GIFT_STATUS[g.status] || g.status}</span>
           </div>
           {g.hidden
-            ? <div className="card-text">🎁 A surprise from Lucian</div>
+            ? <div className="card-text">🎁 A surprise from Lucian{g.shop ? <span className="muted small"> · from {g.shop}</span> : null}</div>
             : (<>
               {g.image && <img className="gift-img" src={g.image} alt="" />}
               <div className="card-text">{g.title}</div>
@@ -2351,10 +2351,18 @@ function GiftsPanel({ pass, setStatus }) {
               {g.zincError && <div className="error">Zinc says: {g.zincError}</div>}
             </div>
           )}
+          {g.status === 'ordered' && (
+            <div className="muted small">
+              {g.delivered ? '✅ Delivered' : g.arriving ? `🚚 On its way · arriving ${g.arriving}` : '🚚 On its way'}
+              {g.trackingLinks?.length > 0
+                ? <> · {g.trackingLinks.map((t, i) => <a key={i} href={t.url} target="_blank" rel="noreferrer">Track it ({t.label})</a>)}</>
+                : !g.delivered && <> · no tracking number from the shop yet — Light keeps checking</>}
+            </div>
+          )}
           {g.error && <p className="error">{g.error}</p>}
         </div>
       ))}
-      {data.gifts.some((g) => g.status === 'ordering') && <button className="btn-ghost" onClick={() => load()}>↻ Check on his order</button>}
+      {data.gifts.some((g) => g.status === 'ordering' || (g.status === 'ordered' && !g.delivered)) && <button className="btn-ghost" onClick={() => load()}>↻ Check on his order</button>}
     </>
   )
 }
