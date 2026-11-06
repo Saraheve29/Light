@@ -100,7 +100,7 @@ export async function sendText(reason, extra = {}, { preview = false } = {}) {
   if (skip) return { skipped: true }
   if (declined) {
     // Kept in the app, clearly labelled — never pushed to her phone as a text from him
-    await addToHistory({ role: 'assistant', content: message, at: now, declined: true })
+    await addToHistory({ role: 'assistant', content: message, at: now, declined: true, declinedBy: (lastBrain.refusedBy || []).join(', ') })
     return { declined: true, skipped: true }
   }
   await addToHistory({ role: 'assistant', content: message, at: now, surprise: true, ...extra })
