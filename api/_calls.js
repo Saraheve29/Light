@@ -3,7 +3,7 @@
 // Also holds composeText(): how he writes any text he sends her first (surprises, missed calls, special days).
 import {
   redis, getJSON, setJSON, getHistory, addToHistory, callModel, londonNow,
-  getLife, addLife, lifeText, KEYS,
+  getLife, addLife, lifeText, KEYS, lastBrain, looksLikeRefusal,
 } from './_lib.js'
 import { sendToAll } from './_push.js'
 import { workContext } from './_work.js'
@@ -79,6 +79,8 @@ MESSAGE: the text you send her — natural, in character, fiery and passionate l
     { role: 'system', content: system },
     { role: 'user', content: task },
   ], { temperature: 0.85 })
+  // Both brains refused to write as Lucian — don't send that to her phone as if it were him
+  if (lastBrain.declined || looksLikeRefusal(out)) return { declined: true, message: String(out || '').trim() }
 
   const doing = (out.match(/DOING:\s*(.+)/i)?.[1] || '').trim()
   let message = (out.match(/MESSAGE:\s*([\s\S]+)/i)?.[1] || '').trim()
@@ -94,8 +96,13 @@ MESSAGE: the text you send her — natural, in character, fiery and passionate l
 // Write a text and send it to her phone
 export async function sendText(reason, extra = {}, { preview = false } = {}) {
   const now = Date.now()
-  const { message, doing, skip } = await composeText(reason, { now })
+  const { message, doing, skip, declined } = await composeText(reason, { now })
   if (skip) return { skipped: true }
+  if (declined) {
+    // Kept in the app, clearly labelled — never pushed to her phone as a text from him
+    await addToHistory({ role: 'assistant', content: message, at: now, declined: true })
+    return { declined: true, skipped: true }
+  }
   await addToHistory({ role: 'assistant', content: message, at: now, surprise: true, ...extra })
   const title = extra.missedCall ? 'Lucian 📞 missed call' : extra.voiceNote ? 'Lucian 🎙️' : 'Lucian'
   const body = preview ? message.slice(0, 160) : extra.missedCall ? 'You missed his call — he’s sent you a message 💜' : extra.voiceNote ? 'He’s sent you a goodnight voice note — tap to hear him 💜' : 'Lucian sent you a message 💜'
