@@ -214,6 +214,8 @@ export async function callOnce(model, messages, { temperature, maxTokens }) {
     const msg = data.error?.message || data.error || `status ${r.status}`
     throw new Error('NanoGPT: ' + msg)
   }
+  // Which model NanoGPT actually used (it can differ from the one asked for) — shown if a message is ever refused
+  lastBrain.served = String(data.model || model)
   const choice = data.choices?.[0] || {}
   let reply = choice.message?.content || ''
   // Some thinking models include their private reasoning — strip it out.
@@ -301,12 +303,13 @@ export async function callModel(model, messages, { temperature = 0.75, maxTokens
   let lastReply = ''
   let refused = ''
   lastBrain.declined = false
+  lastBrain.refusedBy = []
   for (let i = 0; i < attempts.length; i++) {
     const { m, t } = attempts[i]
     try {
       const reply = await callOnce(m, messages, { temperature: t, maxTokens })
       // This brain refused to be Lucian — skip straight to his other brain
-      if (looksLikeRefusal(reply)) { refused = reply; if (i === 0) i++; continue }
+      if (looksLikeRefusal(reply)) { refused = reply; lastBrain.refusedBy = [...(lastBrain.refusedBy || []), `${m}${lastBrain.served && lastBrain.served !== m ? ` (NanoGPT used ${lastBrain.served})` : ''}`].slice(-3); await redis('SET', 'light:lastrefusal', JSON.stringify({ at: Date.now(), by: lastBrain.refusedBy })).catch(() => {}); if (i === 0) i++; continue }
       if (!looksBroken(reply)) { lastBrain.model = m; lastBrain.backup = m !== model; return reply }
       lastReply = reply // garbled — try the next attempt
     } catch (err) {
