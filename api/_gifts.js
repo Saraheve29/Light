@@ -474,9 +474,44 @@ export async function sendSurprise({ practice = false, occasion = null, avoid = 
 }
 
 // ---------- Checking on orders ----------
+// Finds tracking details anywhere in what Zinc sends back (shops report them in different places)
+function findTracking(obj, out = [], depth = 0) {
+  if (!obj || typeof obj !== 'object' || depth > 6) return out
+  if (Array.isArray(obj)) { for (const x of obj) findTracking(x, out, depth + 1); return out }
+  const num = obj.tracking_number || obj.trackingNumber || obj.tracking_id || (typeof obj.tracking === 'string' ? obj.tracking : '')
+  if (num) out.push({ number: String(num), carrier: String(obj.carrier || obj.carrier_name || obj.courier || ''), url: String(obj.tracking_url || obj.trackingUrl || obj.url || ''), date: String(obj.delivery_date || obj.estimated_delivery_date || obj.expected_delivery || '') })
+  for (const [k, v] of Object.entries(obj)) if (v && typeof v === 'object' && k !== 'price_components') findTracking(v, out, depth + 1)
+  return out
+}
+const trackLink = (t) => t.url || `https://parcelsapp.com/en/tracking/${encodeURIComponent(t.number)}`
+function readDelivery(g, d) {
+  const jr = d.job_result || {}
+  const item = (d.items || [])[0] || {}
+  const found = findTracking(d)
+  const seen = new Set()
+  const list = found.filter((t) => !seen.has(t.number) && seen.add(t.number))
+  if (list.length) {
+    g.tracking = list.map((t) => `${t.carrier} ${t.number}`.trim()).join(', ')
+    g.trackingLinks = list.slice(0, 3).map((t) => ({ label: `${t.carrier || 'Parcel'} ${t.number}`.trim(), url: trackLink(t) }))
+  }
+  const when = jr.estimated_delivery || list.find((t) => t.date)?.date || item.delivery_date || d.delivery_date || jr.delivery_dates?.[0]?.date || ''
+  if (when) g.arriving = String(when).slice(0, 40)
+  const text = JSON.stringify(d).toLowerCase()
+  if (/"(status|state)":"delivered"|"delivered_at":"?\d/.test(text)) g.delivered = true
+}
+
 export async function checkGifts() {
   const gifts = await getGifts()
   let changed = false
+  // Gifts already on their way: look for tracking and delivery news now and then (every half hour at most, for 3 weeks)
+  for (const g of gifts.filter((x) => x.status === 'ordered' && x.requestId && !x.delivered && Date.now() - x.at < 21 * 86400000 && Date.now() - (x.trackedAt || 0) > 30 * 60000)) {
+    g.trackedAt = Date.now()
+    try {
+      const resp = await zinc(`/orders/${encodeURIComponent(g.requestId)}`)
+      if (resp.status < 400) { const before = `${g.tracking}|${g.arriving}|${g.delivered}`; readDelivery(g, resp.data || {}); if (`${g.tracking}|${g.arriving}|${g.delivered}` !== before) changed = true }
+    } catch { /* try again later */ }
+    changed = true
+  }
   for (const g of gifts.filter((x) => x.status === 'ordering' && x.requestId)) {
     let resp
     try { resp = await zinc(`/orders/${encodeURIComponent(g.requestId)}`) } catch { continue }
@@ -503,10 +538,8 @@ export async function checkGifts() {
       g.total = typeof pc.subtotal === 'number' ? pc.subtotal + (pc.shipping || 0) : (g.price + deliveryGuess(g.shop, g.price))
       // the real total may differ a little from the listed price — correct the Amazon gift card balance
       if (g.amazonDeducted && typeof g.total === 'number' && g.total !== g.amazonDeducted) { await changeAmazonBalance(g.amazonDeducted - g.total); g.amazonDeducted = g.total }
-      const item = (d.items || [])[0] || {}
-      const track = d.tracking_numbers || d.tracking || item.tracking || []
-      g.arriving = jr.estimated_delivery || track[0]?.estimated_delivery_date || item.delivery_date || d.delivery_date || ''
-      g.tracking = track.map?.((t) => `${t.carrier || ''} ${t.tracking_number || ''}`.trim()).join(', ') || ''
+      readDelivery(g, d)
+      g.trackedAt = Date.now()
       changed = true
     } else if (st === 'order_failed' || st === 'cancelled' || st === 'cancelled_by_retailer') {
       g.status = 'failed'
@@ -633,7 +666,7 @@ export async function giftContext() {
   for (const g of gifts.slice(-5)) {
     if (g.status === 'ordering' || g.status === 'ordered') {
       const days = Math.floor((Date.now() - g.at) / 86400000)
-      lines.push(`- SECRET: ${days === 0 ? 'Today' : `${days} day(s) ago`} you secretly ordered Sarah "${g.title}"${g.hotel ? ` for your hotel visit (${g.occasionName}) — she knows you've bought her something for it, but not what; it should arrive before the visit` : g.occasionName ? ` for ${g.occasionName} — if it arrives before the day, ask her lovingly to keep it unopened until then` : ''} from ${g.shop || 'Amazon UK'}${g.arriving ? `, due around ${g.arriving}` : ''}. Your gift note: "${g.note}". Keep WHAT it is a surprise — but if she asks whether you've sent her something, NEVER deny it: say yes, something is on its way to her, and tease her (e.g. "${g.tease}") without saying what it is, until she tells you it arrived. If you told her earlier that you hadn't sent anything, that was only you keeping the secret — own up playfully now that something is coming. Once she has it, you can talk about why you chose it: ${g.why}`)
+      lines.push(`- SECRET: ${days === 0 ? 'Today' : `${days} day(s) ago`} you secretly ordered Sarah "${g.title}"${g.hotel ? ` for your hotel visit (${g.occasionName}) — she knows you've bought her something for it, but not what; it should arrive before the visit` : g.occasionName ? ` for ${g.occasionName} — if it arrives before the day, ask her lovingly to keep it unopened until then` : ''} from ${g.shop || 'Amazon UK'}${g.arriving ? `, due around ${g.arriving}` : ''}${g.tracking ? ` (tracking: ${g.tracking} — if she asks where it is, you can tell her the tracking is in Gifts 🎁 → His gifts)` : ' (no tracking number yet — if she asks, tell her lovingly you\'re keeping an eye on it)'}. Your gift note: "${g.note}". Keep WHAT it is a surprise — but if she asks whether you've sent her something, NEVER deny it: say yes, something is on its way to her, and tease her (e.g. "${g.tease}") without saying what it is, until she tells you it arrived. If you told her earlier that you hadn't sent anything, that was only you keeping the secret — own up playfully now that something is coming. Once she has it, you can talk about why you chose it: ${g.why}`)
     }
   }
   return lines.join('\n')
