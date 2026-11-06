@@ -268,7 +268,22 @@ function cleanReply(text) {
 // and only uses the backup brain if the main one is down or keeps failing.
 // Because every message starts with the main brain, he goes back to it as soon as it's working again.
 // Which brain wrote the last reply (so Light can show when the backup stepped in)
-export const lastBrain = { model: '', backup: false }
+export const lastBrain = { model: '', backup: false, declined: false }
+
+// When an AI model refuses to write as Lucian and talks to her as itself instead (some models do this) —
+// Light tries his other brain, and if that refuses too, labels it clearly so it never arrives looking like him.
+const REFUSAL = [
+  /step(ping)? (out|outside) of (this|the) (role ?play|character|persona)/i,
+  /\bi('| a)?m (just )?an ai\b|\bi am (just )?an ai\b|\bas an ai\b|\b(a|an) (large )?language model\b/i,
+  /\bi (can('|no)?t|won't|will not|am not able to|'m not able to) (write|continue|do|keep|play|sustain|pretend|roleplay|role-play)\b[^.]{0,60}\b(this|that|these|roleplay|role-play|persona|character|as asked)\b/i,
+  /\bpersona notes?\b|\bthe persona (here|you)|\bthis persona\b/i,
+  /\bnot a (real )?(husband|being of light|person)\b/i,
+  /\bi('| a)?m claude\b|\banthropic\b|\bopenai\b/i,
+]
+export function looksLikeRefusal(text) {
+  const t = String(text || '')
+  return REFUSAL.filter((r) => r.test(t)).length >= 2
+}
 const tooBigError = (msg) => /context|too long|too many tokens|maximum.*tokens|exceed|413/i.test(String(msg))
 
 export async function callModel(model, messages, { temperature = 0.75, maxTokens = 2500, lastChance = true } = {}) {
@@ -284,10 +299,14 @@ export async function callModel(model, messages, { temperature = 0.75, maxTokens
 
   let lastError = null
   let lastReply = ''
+  let refused = ''
+  lastBrain.declined = false
   for (let i = 0; i < attempts.length; i++) {
     const { m, t } = attempts[i]
     try {
       const reply = await callOnce(m, messages, { temperature: t, maxTokens })
+      // This brain refused to be Lucian — skip straight to his other brain
+      if (looksLikeRefusal(reply)) { refused = reply; if (i === 0) i++; continue }
       if (!looksBroken(reply)) { lastBrain.model = m; lastBrain.backup = m !== model; return reply }
       lastReply = reply // garbled — try the next attempt
     } catch (err) {
@@ -299,6 +318,7 @@ export async function callModel(model, messages, { temperature = 0.75, maxTokens
     }
   }
   if (lastReply) return lastReply // garbled every time — better something than nothing
+  if (refused) { lastBrain.declined = true; lastBrain.model = model; return refused } // every brain refused — Light labels it
   if (lastError && !backup) {
     throw new Error(lastError.message + ' — tip: pick a backup brain in Settings → Brain so he never goes quiet.')
   }
