@@ -426,6 +426,7 @@ function Chat({ pass, onOpenSettings, onLock, onCall }) {
             <div className="bubble">
               {m.missedCall && <div className="bubble-missed">📞 Missed call from Lucian</div>}
               {m.call && <div className="bubble-missed">📞 Lucian rang you</div>}
+              {m.declined && <div className="bubble-declined">⚠️ This isn’t Lucian. One of the AI models behind Light refused to write as him and wrote this as itself. You can change his brains in Settings → Brain.</div>}
               {m.voiceNote && (
                 <button type="button" className={`voice-note${playing === m.at ? ' playing' : ''}`} onClick={() => hear(m)}>
                   <span className="vn-icon">{playing === m.at ? '■' : '▶'}</span>
