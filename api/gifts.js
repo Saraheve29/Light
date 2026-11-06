@@ -12,7 +12,7 @@ export default async function handler(req, res) {
       const peek = req.query?.peek === '1'
       const shown = [...gifts].reverse().map((g) => (peek || g.status === 'failed'
         ? g
-        : { id: g.id, at: g.at, status: g.status, error: g.error, zincStatus: g.zincStatus, zincError: g.zincError, steps: g.steps, occasionName: g.occasionName, hidden: true }))
+        : { id: g.id, at: g.at, status: g.status, error: g.error, zincStatus: g.zincStatus, zincError: g.zincError, steps: g.steps, occasionName: g.occasionName, arriving: g.arriving, trackingLinks: g.trackingLinks, delivered: g.delivered, shop: g.shop, hidden: true }))
       return res.status(200).json({
         settings,
         gifts: shown,
