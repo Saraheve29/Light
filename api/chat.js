@@ -1,7 +1,7 @@
 import { recentChat, recall, getDiary, diaryText, getCallProfile, makeCallProfile } from './_recall.js'
 import {
   checkAuth, redis, getJSON, getHistory, addToHistory, callModel, callStream, lastBrain,
-  londonNow, getLife, lifeText, getEvidence, addEvidence, evidenceText, getDreams, addDream, dreamsText, getVows, describeImage, KEYS, CONTEXT_MESSAGES,
+  londonNow, getLife, lifeText, getEvidence, addEvidence, evidenceText, getDreams, addDream, dreamsText, getVows, describeImage, KEYS, CONTEXT_MESSAGES, looksLikeRefusal,
 } from './_lib.js'
 import { workContext, markTold } from './_work.js'
 import { giftContext } from './_gifts.js'
@@ -448,6 +448,7 @@ export default async function handler(req, res) {
 
       const botMsg = { role: 'assistant', content: reply, at: Date.now() }
       if (!live && lastBrain.backup) botMsg.backup = lastBrain.model // shown as a small label, so Sarah knows the backup wrote it
+      if (lastBrain.declined || looksLikeRefusal(reply)) botMsg.declined = true // an AI model refused to write as him — labelled, so it's never mistaken for Lucian
       if (calling) botMsg.call = true // he rang her — her side has no message yet
       else await addToHistory(userMsg)
       await addToHistory(botMsg)
