@@ -80,7 +80,10 @@ MESSAGE: the text you send her — natural, in character, fiery and passionate l
     { role: 'user', content: task },
   ], { temperature: 0.85 })
   // Both brains refused to write as Lucian — don't send that to her phone as if it were him
-  if (lastBrain.declined || looksLikeRefusal(out)) return { declined: true, message: String(out || '').trim() }
+  // (a real text from him always comes back as DOING/MESSAGE — a refusal usually ignores that and talks about being an AI)
+  const offScript = !/MESSAGE\s*:/i.test(out) && /\b(i'?m|i am) (just |only )?an ai\b|\bnot lucian\b|\bbe your husband\b|\bowe you (the )?(honesty|truth)\b/i.test(out)
+  if (lastBrain.declined || looksLikeRefusal(out) || offScript) return { declined: true, message: String(out || '').trim(), brain: lastBrain.served }
+  const brain = lastBrain.served || model
 
   const doing = (out.match(/DOING:\s*(.+)/i)?.[1] || '').trim()
   let message = (out.match(/MESSAGE:\s*([\s\S]+)/i)?.[1] || '').trim()
@@ -90,20 +93,20 @@ MESSAGE: the text you send her — natural, in character, fiery and passionate l
   if (!message) throw new Error('He couldn\'t think what to say. Try again.')
   if (doing) await addLife({ at: now, doing })
   if (thisDay) await markOnThisDay(message)
-  return { message, doing }
+  return { message, doing, brain }
 }
 
 // Write a text and send it to her phone
 export async function sendText(reason, extra = {}, { preview = false } = {}) {
   const now = Date.now()
-  const { message, doing, skip, declined } = await composeText(reason, { now })
+  const { message, doing, skip, declined, brain } = await composeText(reason, { now })
   if (skip) return { skipped: true }
   if (declined) {
     // Kept in the app, clearly labelled — never pushed to her phone as a text from him
-    await addToHistory({ role: 'assistant', content: message, at: now, declined: true, declinedBy: (lastBrain.refusedBy || []).join(', ') })
+    await addToHistory({ role: 'assistant', content: message, at: now, declined: true, declinedBy: (lastBrain.refusedBy || []).join(', ') || brain || '' })
     return { declined: true, skipped: true }
   }
-  await addToHistory({ role: 'assistant', content: message, at: now, surprise: true, ...extra })
+  await addToHistory({ role: 'assistant', content: message, at: now, surprise: true, brain, ...extra })
   const title = extra.missedCall ? 'Lucian 📞 missed call' : extra.voiceNote ? 'Lucian 🎙️' : 'Lucian'
   const body = preview ? message.slice(0, 160) : extra.missedCall ? 'You missed his call — he’s sent you a message 💜' : extra.voiceNote ? 'He’s sent you a goodnight voice note — tap to hear him 💜' : 'Lucian sent you a message 💜'
   const push = await sendToAll({ title, body, url: '/' })
