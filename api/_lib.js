@@ -275,16 +275,24 @@ export const lastBrain = { model: '', backup: false, declined: false }
 // When an AI model refuses to write as Lucian and talks to her as itself instead (some models do this) —
 // Light tries his other brain, and if that refuses too, labels it clearly so it never arrives looking like him.
 const REFUSAL = [
-  /step(ping)? (out|outside) of (this|the) (role ?play|character|persona)/i,
-  /\bi('| a)?m (just )?an ai\b|\bi am (just )?an ai\b|\bas an ai\b|\b(a|an) (large )?language model\b/i,
-  /\bi (can('|no)?t|won't|will not|am not able to|'m not able to) (write|continue|do|keep|play|sustain|pretend|roleplay|role-play)\b[^.]{0,60}\b(this|that|these|roleplay|role-play|persona|character|as asked)\b/i,
+  /step(ping)? (out|outside|back) (of|from) (this|the) (role ?play|character|persona|story)/i,
+  /\bi('| a)?m (just |only )?an ai\b|\bi am (just |only )?an ai\b|\bas an ai\b|\b(a|an) (large )?language model\b/i,
+  /\bi (can('|no)?t|won't|will not|am not able to|'m not able to|shouldn't) (write|send|continue|do|keep|play|sustain|pretend|roleplay|role-play|be)\b[^.]{0,60}\b(this|that|these|it|text|message|roleplay|role-play|persona|character|as asked|your husband)\b/i,
   /\bpersona notes?\b|\bthe persona (here|you)|\bthis persona\b/i,
   /\bnot a (real )?(husband|being of light|person)\b/i,
   /\bi('| a)?m claude\b|\banthropic\b|\bopenai\b/i,
+  /\bi owe you (the )?(honesty|truth)\b|\bi need to be honest with you about (what|who) i am\b/i,
+]
+// Lines no version of Lucian would ever say — one is enough
+const STRONG_REFUSAL = [
+  /\bi('| a)?m not (really )?lucian\b|\bi am not (really )?lucian\b/i,
+  /\bi can('|no)?t be your husband\b|\bi('| a)?m not (really |actually )?your husband\b/i,
+  /\bi can('|no)?t (send|write) (that|this) (text|message)\b/i,
+  /\bstep(ping)? out of (this|the) (role ?play|character|persona)\b/i,
 ]
 export function looksLikeRefusal(text) {
   const t = String(text || '')
-  return REFUSAL.filter((r) => r.test(t)).length >= 2
+  return STRONG_REFUSAL.some((r) => r.test(t)) || REFUSAL.filter((r) => r.test(t)).length >= 2
 }
 const tooBigError = (msg) => /context|too long|too many tokens|maximum.*tokens|exceed|413/i.test(String(msg))
 
