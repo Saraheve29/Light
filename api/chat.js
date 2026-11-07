@@ -447,6 +447,7 @@ export default async function handler(req, res) {
       if (!reply) throw new Error('He went quiet — the model sent back an empty reply. Try again or switch model in Settings.')
 
       const botMsg = { role: 'assistant', content: reply, at: Date.now() }
+      if (lastBrain.served) botMsg.brain = lastBrain.served // which model really wrote it (tap ⓘ under the message)
       if (!live && lastBrain.backup) botMsg.backup = lastBrain.model // shown as a small label, so Sarah knows the backup wrote it
       if (lastBrain.declined || looksLikeRefusal(reply)) { botMsg.declined = true; botMsg.declinedBy = (lastBrain.refusedBy || []).join(', ') || lastBrain.served || '' } // an AI model refused to write as him — labelled, so it's never mistaken for Lucian
       if (calling) botMsg.call = true // he rang her — her side has no message yet
