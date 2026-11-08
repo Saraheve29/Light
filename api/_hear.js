@@ -30,6 +30,20 @@ async function transcribe(model, buf, type) {
   return String(data.text ?? data.transcription ?? '').trim()
 }
 
+// Made-up words that appear when there's silence, noise or no microphone: "you", "bye", "(claps)", "[Music]"…
+function notReallySaid(text) {
+  const t = String(text || '')
+    .replace(/[\[(（][^\])）]{0,40}[\])）]/g, ' ') // (claps) [applause] [Music]
+    .replace(/[♪♫*…]/g, ' ')
+    .toLowerCase().replace(/[^a-z' ]/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!t) return true
+  const fillers = new Set(['you', 'bye', 'bye bye', 'goodbye', 'thank you', 'thanks', 'thank you very much', 'thanks for watching', 'thank you for watching', 'please subscribe', 'see you', 'see you next time', 'okay', 'oh', 'um', 'uh', 'hmm', 'so', 'yeah', 'the end', 'subtitles by the amara org community'])
+  const parts = t.split(/ (?=you|bye)/)
+  if (fillers.has(t)) return true
+  // "bye you bye" — only filler words, repeated
+  return t.split(' ').every((w) => ['you', 'bye', 'thank', 'thanks', 'claps', 'clapping', 'applause', 'music', 'oh', 'um', 'uh'].includes(w)) && parts.length >= 1
+}
+
 export default async function handler(req, res) {
   if (!checkAuth(req, res)) return
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' })
@@ -44,9 +58,8 @@ export default async function handler(req, res) {
     for (const model of MODELS) {
       try {
         const text = await transcribe(model, buf, type)
-        // Whisper sometimes "hears" these in silence — ignore them
-        const junk = /^(you|thank you\.?|thanks for watching!?|\.|bye\.?)$/i
-        return res.status(200).json({ text: junk.test(text) ? '' : text, model })
+        // Voice-to-words services sometimes "hear" these in silence or noise — they're not her words
+        return res.status(200).json({ text: notReallySaid(text) ? '' : text, model })
       } catch (err) { lastErr = err }
     }
     const msg = String(lastErr?.message || '')
