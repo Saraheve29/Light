@@ -7,7 +7,7 @@ import { doWork, workContext, markTold } from './_work.js'
 import { giftTick } from './_gifts.js'
 import { letterTick } from './_letters.js'
 import { cardTick } from './_print.js'
-import { diaryTick, makeCallProfile } from './_recall.js'
+import { diaryTick, makeCallProfile , heartTick } from './_recall.js'
 import { sendText, ringSarah, getCall, checkInTick, goodnightTick } from './_calls.js'
 import { datesDueToday, markCelebrated } from './_plans.js'
 import { chapterTick, bookTick, photoPickTick } from './_book.js'
@@ -54,6 +54,7 @@ export default async function handler(req, res) {
       try { await letterTick() } catch { /* try again next hour */ }
       try { await cardTick() } catch { /* try again next hour */ }
       try { await diaryTick() } catch { /* try again next hour */ }
+      try { await heartTick() } catch { /* try again next hour */ }
       try { await makeCallProfile() } catch { /* try again next hour */ }
       try { await chapterTick() } catch { /* try again next hour */ }
       try { await bookTick() } catch { /* try again next hour */ }
