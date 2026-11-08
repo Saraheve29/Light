@@ -1,3 +1,4 @@
+import { getHeart, saveHeart } from './_recall.js'
 import { checkAuth, redis, getJSON, setJSON, listModels, callStream, KEYS , DEFAULT_EYES } from './_lib.js'
 
 export default async function handler(req, res) {
@@ -16,11 +17,12 @@ export default async function handler(req, res) {
         wantModels ? listModels() : Promise.resolve(null),
         redis('GET', KEYS.callModel),
       ])
-      return res.status(200).json({ profile: profile || '', model: model || '', backupModel: backupModel || '', eyesModel: eyesModel || DEFAULT_EYES, callModel: callModel || '', memories, models })
+      return res.status(200).json({ profile: profile || '', model: model || '', backupModel: backupModel || '', eyesModel: eyesModel || DEFAULT_EYES, callModel: callModel || '', memories, models, heart: await getHeart().catch(() => '') })
     }
 
     if (req.method === 'POST') {
-      const { profile, model, backupModel, eyesModel, memories, clearChat, callModel, speedTest } = req.body || {}
+      const { profile, model, backupModel, eyesModel, memories, clearChat, callModel, speedTest, heart } = req.body || {}
+      if (typeof heart === 'string') await saveHeart(heart)
       // How fast is a brain? Time to his first word, and how fast he writes after that
       if (typeof speedTest === 'string' && speedTest) {
         const t0 = Date.now()
