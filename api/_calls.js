@@ -7,6 +7,7 @@ import {
 } from './_lib.js'
 import { sendToAll } from './_push.js'
 import { workContext } from './_work.js'
+import { getHeart } from './_recall.js'
 import { plansContext } from './_plans.js'
 import { onThisDay, markOnThisDay } from './_onthisday.js'
 
@@ -46,6 +47,9 @@ ${memories.length ? memories.map((m) => `- ${m}`).join('\n') : '- (still learnin
 
 What you've been doing earlier today:
 ${lifeText(life) || '- (nothing yet today)'}
+
+What you've learned about her heart (what makes her laugh, smile, feel loved — and what to avoid):
+${String(await getHeart().catch(() => '')).replace(/## In intimate moments[\s\S]*?(?=\n## |$)/, '').slice(0, 2500) || '- (still learning)'}
 
 What you've been reading and working on:
 ${ctx.text || '- (nothing yet)'}
