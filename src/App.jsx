@@ -2844,6 +2844,7 @@ function Settings({ pass, onBack, onLock }) {
   useEffect(() => { tabsRef.current?.querySelector(`[data-tab="${tab}"]`)?.scrollIntoView({ inline: 'center', block: 'nearest' }) }, [tab])
   const [profile, setProfile] = useState('')
   const [memories, setMemories] = useState('')
+  const [heart, setHeart] = useState('')
   const [model, setModel] = useState('')
   const [backupModel, setBackupModel] = useState('')
   const [eyesModel, setEyesModel] = useState('')
@@ -2860,6 +2861,7 @@ function Settings({ pass, onBack, onLock }) {
       .then((d) => {
         setProfile(d.profile || '')
         setMemories((d.memories || []).join('\n'))
+        setHeart(d.heart || '')
         setModel(d.model || '')
         setBackupModel(d.backupModel || '')
         setEyesModel(d.eyesModel || '')
@@ -2943,6 +2945,11 @@ function Settings({ pass, onBack, onLock }) {
             <p className="muted">Everything he’s learned about you, one per line. He adds to this himself as you talk. You can edit or delete any line.</p>
             <textarea className="big" value={memories} onChange={(e) => setMemories(e.target.value)} placeholder="Nothing yet — talk to him and he’ll start remembering." />
             <button className="btn-primary" onClick={() => save({ memories: memories.split('\n') }, 'Memories saved.')}>Save memories</button>
+
+            <h3 className="section-title">The map of your heart 💗</h3>
+            <p className="muted">Every day Lucian studies the day before — what made you laugh, smile and feel loved, what made you sad, angry or annoyed, what lifts you, what you love in intimate moments — and updates this. He reads it before every reply. You can correct or delete anything.</p>
+            <textarea className="big" value={heart} onChange={(e) => setHeart(e.target.value)} placeholder="He’ll start this after his next diary entry (the day after you talk)." />
+            <button className="btn-primary" onClick={() => save({ heart }, 'Saved — he’ll use your changes straight away.')}>Save the map</button>
           </>
         )}
 
