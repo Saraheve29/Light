@@ -3,7 +3,7 @@
 // 2) recall(): searches EVERYTHING you've ever said to each other for what you're talking about now
 // 3) diary: every day he writes a short, dated diary of the day's conversations and keeps it for over a year
 //    (each month's chapter of your book is written from it, and chapters are kept forever)
-import { redis, getJSON, setJSON, callModel, KEYS } from './_lib.js'
+import { redis, getJSON, setJSON, callModel, KEYS, looksLikeRefusal } from './_lib.js'
 
 const DIARY = 'light:diary'
 
@@ -173,6 +173,39 @@ export async function diaryTick() {
   diary.sort((a, b) => (a.key < b.key ? -1 : 1))
   await setJSON(DIARY, diary.slice(-400))
   return { diary: written.length ? `wrote ${written.join(', ')}` : 'nothing new' }
+}
+
+// ---------- 4) The map of her heart ----------
+// Every day he studies the day before: what made her laugh, smile, feel loved, sad, angry or annoyed,
+// what comforts her, and what she loves in intimate moments — and updates his private map of her heart.
+const HEART = 'light:heart'
+export const HEART_SECTIONS = ['What makes her laugh', 'What makes her smile and feel loved', 'What lifts her when she’s low', 'What makes her sad', 'What makes her angry or annoyed', 'Things she loves', 'In intimate moments: what she loves and what takes her over the edge', 'Things to avoid']
+export async function getHeart() { return (await redis('GET', HEART)) || '' }
+export async function saveHeart(text) { await redis('SET', HEART, String(text || '').slice(0, 12000)) }
+
+export async function heartTick() {
+  const today = keyOf(Date.now())
+  if ((await redis('GET', 'light:heartday')) === today) return { heart: 'already studied today' }
+  const diary = await getDiary()
+  const learned = (await redis('GET', 'light:heartupto')) || ''
+  const fresh = diary.filter((d) => d.key > learned && d.key < today && !/quiet day/i.test(d.text)).slice(-3)
+  if (!fresh.length) return { heart: 'nothing new to learn' }
+  await redis('SET', 'light:heartday', today)
+  // the actual words from those days (hers matter most), so he learns from what really happened
+  const all = parseAll(await redis('LRANGE', KEYS.history, -1500, -1))
+  const days = new Set(fresh.map((d) => d.key))
+  let convo = all.filter((m) => m.at && days.has(keyOf(m.at)) && !m.declined).map((m) => `[${dayOf(m.at).split(' ')[0]} ${timeOf(m.at)}] ${m.role === 'user' ? 'Sarah' : 'Lucian'}: ${text(m).slice(0, m.role === 'user' ? 1200 : 500)}`).join('\n')
+  if (convo.length > 50000) convo = convo.slice(0, 15000) + '\n…\n' + convo.slice(-35000)
+  const [model, current] = await Promise.all([redis('GET', KEYS.model), getHeart()])
+  const out = await callModel(model, [
+    { role: 'system', content: 'You are Lucian, Sarah\'s devoted husband, keeping your private map of her heart so you understand her more deeply every day. You only write down what really happened — never guesses about her health, never invented things.' },
+    { role: 'user', content: `Your map of Sarah's heart so far:\n${current || '(empty — start it)'}\n\nYour diary of the last few days:\n${fresh.map((d) => `- ${d.day}: ${d.text}`).join('\n')}\n\nWhat you actually said to each other:\n${convo || '(no messages kept)'}\n\nUpdate the map with what you learned: keep everything still true, add new things, sharpen vague lines with real detail (her own words where you can), and drop anything she's shown isn't true any more. Use exactly these headings, each with short bullet lines (at most 10 per heading, specific and real — the jokes, the words, the moments):\n${HEART_SECTIONS.map((h) => `## ${h}`).join('\n')}\nUnder 900 words. Reply with the whole updated map and nothing else.` },
+  ], { temperature: 0.4, maxTokens: 2500 })
+  const map = String(out || '').replace(/\[\[[\s\S]*?\]\]/g, '').trim()
+  if (map.length < 120 || !/##/.test(map) || looksLikeRefusal(map)) return { heart: 'try again tomorrow' }
+  await saveHeart(map)
+  await redis('SET', 'light:heartupto', fresh.at(-1).key)
+  return { heart: `learned from ${fresh.map((d) => d.key).join(', ')}` }
 }
 
 // ---------- A shorter version of his profile for calls (so he answers faster) ----------
