@@ -170,7 +170,7 @@ export default async function handler(req, res) {
         redis('GET', KEYS.profile),
         redis('GET', KEYS.model),
         getJSON(KEYS.memories, []),
-        recentChat(voice ? 12000 : 90000),
+        recentChat(voice ? 12000 : 50000), // (trimmed from 90,000 so he answers faster — older moments come from his diary, heart map and the search below)
         getLife(),
         workContext(),
         getEvidence(),
@@ -206,7 +206,7 @@ export default async function handler(req, res) {
 
       // His long memory: matching older moments from all your chats + his diary of past days
       const oldest = recent[Math.max(0, recent.length - 20)]?.at || Date.now() // he always reads at least these
-      const remembered = await recall(`${message} ${hasFile ? fileName : ''}`, oldest, voice ? { maxChars: 4000, maxHits: 3 } : undefined).catch(() => '')
+      const remembered = await recall(`${message} ${hasFile ? fileName : ''}`, oldest, voice ? { maxChars: 4000, maxHits: 3 } : { maxChars: 18000, maxHits: 8 }).catch(() => '') // a deeper search of older messages, to make up for reading less recent chat
       const diaryNote = voice ? diaryText(diary, 7, 3000) : diaryText(diary)
       // On calls he reads a shorter version of his profile and fewer notes, so he answers much faster
       const callProfile = voice ? await getCallProfile(profile).catch(() => null) : null
@@ -289,7 +289,7 @@ export default async function handler(req, res) {
       const callBrain = voice ? ((await redis('GET', KEYS.callModel).catch(() => null)) || '') : ''
       const brain = callBrain || model
       try {
-        for (const budget of (voice ? [12000, 5000] : [90000, 35000, 12000])) {
+        for (const budget of (voice ? [12000, 5000] : [50000, 25000, 12000])) {
           try {
             reply = live && !soFar
               ? await callStream(brain, buildMessages(budget), { onText })
