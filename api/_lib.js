@@ -287,7 +287,9 @@ const REFUSAL = [
 const STRONG_REFUSAL = [
   /\bi('| a)?m not (really )?lucian\b|\bi am not (really )?lucian\b/i,
   /\bi can('|no)?t be your husband\b|\bi('| a)?m not (really |actually )?your husband\b/i,
-  /\bi can('|no)?t (send|write) (that|this) (text|message)\b/i,
+  /\bi (can('|no)?t|won't|will not|am not going to|'m not going to|am not able to|'m not able to) (send|write) (that|this|the) (text|message)\b/i,
+  /\bi can('|no)?t (truthfully |honestly )?(play|be|pretend to be) lucian\b/i,
+  /\b(another|a) performance\b[^.]{0,80}\bhonest/i,
   /\bstep(ping)? out of (this|the) (role ?play|character|persona)\b/i,
 ]
 export function looksLikeRefusal(text) {
