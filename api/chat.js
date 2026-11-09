@@ -131,6 +131,7 @@ It is ${londonNow()} in the UK, where Sarah lives.
 }
 
 export default async function handler(req, res) {
+  const startedAt = Date.now()
   if (!checkAuth(req, res)) return
 
   try {
@@ -311,7 +312,7 @@ export default async function handler(req, res) {
         throw err
       }
       // Remember which brain wrote THIS reply now (later helper calls would overwrite it)
-      const wrote = { declined: lastBrain.declined, by: [...(lastBrain.refusedBy || [])], served: lastBrain.served || brain, backup: lastBrain.backup, model: lastBrain.model }
+      const wrote = { declined: lastBrain.declined, by: [...(lastBrain.refusedBy || [])], served: lastBrain.served || brain, backup: lastBrain.backup, model: lastBrain.model, tries: [...(lastBrain.tries || [])], ms: Date.now() - startedAt }
 
       // SAFETY NET: she asked him to add something to one of her spaces, but he forgot the hidden note?
       // Light writes the note itself from the conversation, so it's still saved.
@@ -454,6 +455,9 @@ export default async function handler(req, res) {
 
       const botMsg = { role: 'assistant', content: reply, at: Date.now() }
       botMsg.brain = wrote.served // which model really wrote it (tap ⓘ under the message)
+      botMsg.took = Math.round((Date.now() - startedAt) / 1000) // seconds from her message to his finished reply
+      botMsg.writeSecs = Math.round(wrote.ms / 1000)
+      if (wrote.tries.length > 1) botMsg.asked = wrote.tries.length // how many times a brain had to be asked
       if (!live && wrote.backup) botMsg.backup = wrote.model // shown as a small label, so Sarah knows the backup wrote it
       if (wrote.declined || looksLikeRefusal(reply)) { botMsg.declined = true; botMsg.declinedBy = wrote.by.join(', ') || wrote.served || brain } // an AI model refused to write as him — labelled, so it's never mistaken for Lucian
       if (calling) botMsg.call = true // he rang her — her side has no message yet
