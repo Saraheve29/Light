@@ -358,6 +358,22 @@ function Chat({ pass, onOpenSettings, onLock, onCall }) {
       }
       if (d.shouldRemember) api('/api/remember', pass, { method: 'POST' }).catch(() => {})
     } catch (err) {
+      // "Failed to fetch" usually means her phone dropped the connection while he was still writing
+      // (switching apps, screen off, signal). Light keeps going on its side — so wait for his reply instead
+      // of giving her message back (sending it again would make him answer twice).
+      if (!err.status && /fetch|network|load failed|aborted/i.test(err.message)) {
+        setNotice('📶 The connection dropped while he was writing — waiting for his reply…')
+        const sentAt = Date.now() - 5000
+        let got = false
+        for (let i = 0; i < 40 && !got; i++) {
+          await new Promise((r) => setTimeout(r, 6000))
+          const h = await api('/api/chat', pass).catch(() => null)
+          if (h?.history?.some((x) => x.role === 'assistant' && (x.at || 0) > sentAt)) { setMessages(h.history); got = true }
+        }
+        setNotice('')
+        if (!got) { setError('His reply didn’t arrive — check your signal, then send it again.'); setText(msg); if (atts.length) setAttachments(atts) }
+        return
+      }
       setError(err.message)
       setNotice('')
       setText(msg) // give her message back so nothing is lost
@@ -455,7 +471,7 @@ function Chat({ pass, onOpenSettings, onLock, onCall }) {
               <div className="bubble-meta">
                 <CopyButton text={m.content} />
                 {m.role === 'assistant' && (
-                  <button type="button" className="copy-btn" onClick={() => { setNotice(m.brain ? `Written by: ${m.brain}` : 'Light didn’t record which model wrote this one (older messages weren’t tracked).'); setTimeout(() => setNotice(''), 6000) }} aria-label="Which model wrote this">ⓘ</button>
+                  <button type="button" className="copy-btn" onClick={() => { setNotice(m.brain ? `Written by: ${m.brain}${m.took ? ` · reply took ${m.took}s (his brain ${m.writeSecs ?? '?'}s)` : ''}${m.asked > 1 ? ` · asked ${m.asked} times` : ''}` : 'Light didn’t record which model wrote this one (older messages weren’t tracked).'); setTimeout(() => setNotice(''), 8000) }} aria-label="Which model wrote this">ⓘ</button>
                 )}
                 {m.content && m.at && (
                   <button type="button" className={`copy-btn star-btn${stars.has(starId(m)) ? ' on' : ''}`} onClick={() => toggleStar(m)} aria-label={stars.has(starId(m)) ? 'Starred for your book' : 'Star to keep in your book'}>{stars.has(starId(m)) ? '★' : '☆'}</button>
