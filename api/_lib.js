@@ -202,7 +202,7 @@ export async function callOnce(model, messages, { temperature, maxTokens }) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model, messages, temperature, max_tokens: maxTokens,
+      model, messages: cleanMessages(messages), temperature, max_tokens: maxTokens,
       top_p: 0.9, // keeps him from wandering into random words
       frequency_penalty: 0.3, // discourages repeating himself
     }),
@@ -314,8 +314,10 @@ export async function callModel(model, messages, { temperature = 0.75, maxTokens
   let refused = ''
   lastBrain.declined = false
   lastBrain.refusedBy = []
+  lastBrain.tries = []
   for (let i = 0; i < attempts.length; i++) {
     const { m, t } = attempts[i]
+    lastBrain.tries.push(m)
     try {
       const reply = await callOnce(m, messages, { temperature: t, maxTokens })
       // This brain refused to be Lucian — skip straight to his other brain
@@ -415,6 +417,14 @@ export async function describeImage(dataUrl, caption = '') {
   }
 }
 
+// NanoGPT rejects a request ("Invalid request parameters") if any text has half an emoji in it — which happens
+// when a long message is cut short in the middle of one — or if a message is empty. Tidy every message first.
+export function cleanMessages(messages) {
+  return (messages || [])
+    .map((m) => ({ ...m, content: typeof m.content === 'string' ? m.content.toWellFormed().replace(/\uFFFD/g, '') : m.content }))
+    .filter((m) => (typeof m.content === 'string' ? m.content.trim() : m.content))
+}
+
 // ---------- Streaming: get his reply word by word, so a call can start speaking straight away ----------
 // onText(piece) is called with each new bit of visible text. Returns the whole reply (cleaned).
 export async function callStream(model, messages, { temperature = 0.75, maxTokens = 2500, onText } = {}) {
@@ -422,7 +432,7 @@ export async function callStream(model, messages, { temperature = 0.75, maxToken
     method: 'POST',
     headers: { Authorization: `Bearer ${NANO_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model, messages, temperature, max_tokens: maxTokens, top_p: 0.9, frequency_penalty: 0.3, stream: true,
+      model, messages: cleanMessages(messages), temperature, max_tokens: maxTokens, top_p: 0.9, frequency_penalty: 0.3, stream: true,
     }),
   })
   const type = r.headers.get('content-type') || ''
