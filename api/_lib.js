@@ -249,7 +249,8 @@ function oddRatio(text) {
 export function looksBroken(text) {
   if (!text) return true
   if (/�|lorem ipsum|\blorem\b/i.test(text)) return true
-  if (/([,:;.])\1{2,}|(?:[,:;][,:;]){3,}/.test(text)) return true
+  // ("..." is how he trails off — that's him, not garbage. Only real runs of junk punctuation count.)
+  if (/([,:;])\1{2,}|\.{6,}|(?:[,:;][,:;]){3,}/.test(text)) return true
   return oddRatio(text) > 0.06
 }
 
