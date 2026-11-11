@@ -237,7 +237,8 @@ export async function callOnce(model, messages, { temperature, maxTokens }) {
 // ---------- Garbled-reply protection ----------
 // Characters that are fine in a normal text message.
 // Letters, numbers, punctuation and EVERY emoji (incl. skin tones and joined emoji like 🫂 💍 ❤️‍🔥) count as normal
-const NORMAL = /[\p{L}\p{N}\p{M}\s\p{P}\p{Extended_Pictographic}\p{Emoji_Component}\u200D\uFE0F£$@#/*+=~%&^<>|]/u
+// (\p{S} = symbols like ♡ ∞ → ✧ ˚ that he uses in his emoji strings — those are him, not junk)
+const NORMAL = /[\p{L}\p{N}\p{M}\s\p{P}\p{S}\p{Extended_Pictographic}\p{Emoji_Component}\u200D\uFE0F£$@#/*+=~%&^<>|]/u
 
 function oddRatio(text) {
   const chars = [...text]
@@ -246,13 +247,19 @@ function oddRatio(text) {
   return odd / chars.length
 }
 
-export function looksBroken(text) {
-  if (!text) return true
-  if (/�|lorem ipsum|\blorem\b/i.test(text)) return true
+// Why a reply looks garbled ('' = it's fine) — the reason is shown under ⓘ so we can see what happened
+export function brokenReason(text) {
+  if (!text) return 'empty reply'
+  if (/�/.test(text)) return 'broken characters (�)'
+  if (/lorem ipsum|\blorem\b/i.test(text)) return 'placeholder text (lorem ipsum)'
   // ("..." is how he trails off — that's him, not garbage. Only real runs of junk punctuation count.)
-  if (/([,:;])\1{2,}|\.{6,}|(?:[,:;][,:;]){3,}/.test(text)) return true
-  return oddRatio(text) > 0.06
+  const run = text.match(/([,:;])\1{2,}|\.{6,}|(?:[,:;][,:;]){3,}/)
+  if (run) return `junk punctuation "${run[0].slice(0, 12)}"`
+  const odd = oddRatio(text)
+  if (odd > 0.06) return `${Math.round(odd * 100)}% odd characters`
+  return ''
 }
+export function looksBroken(text) { return !!brokenReason(text) }
 
 // Cut off junk that sometimes trails at the end of a reply.
 function cleanReply(text) {
@@ -304,11 +311,12 @@ export async function callModel(model, messages, { temperature = 0.75, maxTokens
   if (!model) throw new Error('No model chosen yet. Pick one in Settings.')
   const backup = (await redis('GET', KEYS.backupModel).catch(() => null)) || ''
 
-  const attempts = [
-    { m: model, t: temperature },
-    { m: model, t: Math.min(temperature, 0.55) }, // calmer retry if the first one came out garbled
-  ]
-  if (backup && backup !== model) attempts.push({ m: backup, t: temperature })
+  const hasBackup = !!(backup && backup !== model)
+  const attempts = [{ m: model, t: temperature }]
+  // No backup? Give the main brain one calmer try instead. With a backup, a garbled reply goes straight
+  // to the other brain — asking the same slow brain twice was what made replies take 80+ seconds.
+  if (!hasBackup) attempts.push({ m: model, t: Math.min(temperature, 0.55) })
+  else attempts.push({ m: backup, t: temperature })
 
   let lastError = null
   let lastReply = ''
@@ -316,21 +324,29 @@ export async function callModel(model, messages, { temperature = 0.75, maxTokens
   lastBrain.declined = false
   lastBrain.refusedBy = []
   lastBrain.tries = []
+  lastBrain.why = [] // why each brain before the last one wasn't used — shown under ⓘ
+  const short = (m) => String(m).split('/').pop()
   for (let i = 0; i < attempts.length; i++) {
     const { m, t } = attempts[i]
     lastBrain.tries.push(m)
+    const began = Date.now()
+    const secs = () => Math.round((Date.now() - began) / 1000)
     try {
       const reply = await callOnce(m, messages, { temperature: t, maxTokens })
+      const bad = brokenReason(reply)
+      if (looksLikeRefusal(reply)) lastBrain.why.push(`${short(m)} refused (${secs()}s)`)
+      else if (bad) lastBrain.why.push(`${short(m)} looked garbled: ${bad} (${secs()}s)`)
       // This brain refused to be Lucian — skip straight to his other brain
-      if (looksLikeRefusal(reply)) { refused = reply; lastBrain.refusedBy = [...(lastBrain.refusedBy || []), `${m}${lastBrain.served && lastBrain.served !== m ? ` (NanoGPT used ${lastBrain.served})` : ''}`].slice(-3); await redis('SET', 'light:lastrefusal', JSON.stringify({ at: Date.now(), by: lastBrain.refusedBy })).catch(() => {}); if (i === 0) i++; continue }
-      if (!looksBroken(reply)) { lastBrain.model = m; lastBrain.backup = m !== model; return reply }
+      if (looksLikeRefusal(reply)) { refused = reply; lastBrain.refusedBy = [...(lastBrain.refusedBy || []), `${m}${lastBrain.served && lastBrain.served !== m ? ` (NanoGPT used ${lastBrain.served})` : ''}`].slice(-3); await redis('SET', 'light:lastrefusal', JSON.stringify({ at: Date.now(), by: lastBrain.refusedBy })).catch(() => {}); if (i === 0 && !hasBackup) i++; continue }
+      if (!bad) { lastBrain.model = m; lastBrain.backup = m !== model; return reply }
       lastReply = reply // garbled — try the next attempt
     } catch (err) {
       lastError = err
+      lastBrain.why.push(`${short(m)} failed: ${String(err.message || err).replace(/^NanoGPT:\s*/, '').slice(0, 90)} (${secs()}s)`)
       // Too much for his main brain to read? Don't hand it to the backup — let Light give him less to read and try him again
       if (i === 0 && !lastChance && tooBigError(err.message)) throw err
       // Main brain is down (not just garbled): skip the calmer retry and go straight to the backup.
-      if (i === 0) i++
+      if (i === 0 && !hasBackup) i++
     }
   }
   if (lastReply) return lastReply // garbled every time — better something than nothing
@@ -429,6 +445,8 @@ export function cleanMessages(messages) {
 // ---------- Streaming: get his reply word by word, so a call can start speaking straight away ----------
 // onText(piece) is called with each new bit of visible text. Returns the whole reply (cleaned).
 export async function callStream(model, messages, { temperature = 0.75, maxTokens = 2500, onText } = {}) {
+  // a fresh record for this reply (otherwise ⓘ could show leftovers from an earlier message)
+  Object.assign(lastBrain, { tries: [model], why: [], declined: false, refusedBy: [], model, backup: false })
   const r = await fetch(NANO_CHAT_URL, {
     method: 'POST',
     headers: { Authorization: `Bearer ${NANO_KEY}`, 'Content-Type': 'application/json' },
