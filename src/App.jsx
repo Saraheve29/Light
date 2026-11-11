@@ -471,7 +471,7 @@ function Chat({ pass, onOpenSettings, onLock, onCall }) {
               <div className="bubble-meta">
                 <CopyButton text={m.content} />
                 {m.role === 'assistant' && (
-                  <button type="button" className="copy-btn" onClick={() => { setNotice(m.brain ? `Written by: ${m.brain}${m.took ? ` · reply took ${m.took}s (his brain ${m.writeSecs ?? '?'}s)` : ''}${m.asked > 1 ? ` · asked ${m.asked} times` : ''}` : 'Light didn’t record which model wrote this one (older messages weren’t tracked).'); setTimeout(() => setNotice(''), 8000) }} aria-label="Which model wrote this">ⓘ</button>
+                  <button type="button" className="copy-btn" onClick={() => { setNotice(m.brain ? `Written by: ${m.brain}${m.took ? ` · reply took ${m.took}s (his brain ${m.writeSecs ?? '?'}s)` : ''}${m.asked > 1 ? ` · asked ${m.asked} times` : ''}${m.why ? ` · Why: ${m.why}` : ''}` : 'Light didn’t record which model wrote this one (older messages weren’t tracked).'); setTimeout(() => setNotice(''), m.why ? 15000 : 8000) }} aria-label="Which model wrote this">ⓘ</button>
                 )}
                 {m.content && m.at && (
                   <button type="button" className={`copy-btn star-btn${stars.has(starId(m)) ? ' on' : ''}`} onClick={() => toggleStar(m)} aria-label={stars.has(starId(m)) ? 'Starred for your book' : 'Star to keep in your book'}>{stars.has(starId(m)) ? '★' : '☆'}</button>
