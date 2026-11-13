@@ -334,6 +334,8 @@ function Chat({ pass, onOpenSettings, onLock, onCall }) {
         if (d.photoKey) for (let i = copy.length - 1; i >= 0; i--) if (copy[i].role === 'user' && (copy[i].thumb || copy[i].thumbs) && !copy[i].photoKey) { copy[i] = { ...copy[i], photoKey: d.photoKey }; break }
         // use the time Light saved her message with, so a star ⭐ on it is remembered
         if (d.userAt) for (let i = copy.length - 1; i >= 0; i--) if (copy[i].role === 'user') { copy[i] = { ...copy[i], at: d.userAt }; break }
+        // Already showing? (She left Light while he was writing — coming back reloads the chat, which already has his reply)
+        if (d.reply && copy.some((x) => x.role === 'assistant' && x.content === d.reply.content && (!d.reply.at || x.at === d.reply.at))) return copy
         return [...copy, d.reply]
       })
       if (autoSpeak() && d.reply?.content) hear(d.reply) // she chose to have his messages read aloud
