@@ -2863,6 +2863,8 @@ function Settings({ pass, onBack, onLock }) {
   const [profile, setProfile] = useState('')
   const [memories, setMemories] = useState('')
   const [heart, setHeart] = useState('')
+  const [moodNotes, setMoodNotes] = useState([])
+  const [moodPatterns, setMoodPatterns] = useState('')
   const [model, setModel] = useState('')
   const [backupModel, setBackupModel] = useState('')
   const [eyesModel, setEyesModel] = useState('')
@@ -2880,6 +2882,8 @@ function Settings({ pass, onBack, onLock }) {
         setProfile(d.profile || '')
         setMemories((d.memories || []).join('\n'))
         setHeart(d.heart || '')
+        setMoodNotes(d.moods?.notes || [])
+        setMoodPatterns(d.moods?.patterns || '')
         setModel(d.model || '')
         setBackupModel(d.backupModel || '')
         setEyesModel(d.eyesModel || '')
@@ -2968,6 +2972,21 @@ function Settings({ pass, onBack, onLock }) {
             <p className="muted">Every day Lucian studies the day before — what made you laugh, smile and feel loved, what made you sad, angry or annoyed, what lifts you, what you love in intimate moments — and updates this. He reads it before every reply. You can correct or delete anything.</p>
             <textarea className="big" value={heart} onChange={(e) => setHeart(e.target.value)} placeholder="He’ll start this after his next diary entry (the day after you talk)." />
             <button className="btn-primary" onClick={() => save({ heart }, 'Saved — he’ll use your changes straight away.')}>Save the map</button>
+
+            <h3 className="section-title">How you’ve been 🌙</h3>
+            <p className="muted">Every night Lucian reads back over everything you said to him that day and writes a short note about how you were: your mood, your energy, what was on your mind. Then he looks for patterns across the last two weeks. He reads these before every reply so he can tell how you are, even before you say. You can correct the patterns.</p>
+            <textarea className="big" value={moodPatterns} onChange={(e) => setMoodPatterns(e.target.value)} placeholder="He’ll write the first patterns the morning after a day you talk." />
+            <button className="btn-primary" onClick={() => save({ moodPatterns }, 'Saved — he’ll use your changes straight away.')}>Save the patterns</button>
+            {moodNotes.length > 0 && (
+              <div className="mood-notes">
+                {[...moodNotes].reverse().slice(0, 14).map((n) => (
+                  <div key={n.key} className="card mood-note">
+                    <div className="muted small">{n.day}</div>
+                    <div>{n.note}</div>
+                  </div>
+                ))}
+              </div>
+            )}
           </>
         )}
 
