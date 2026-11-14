@@ -234,3 +234,58 @@ export async function makeCallProfile(force = false) {
   await setJSON(CALL_PROFILE, { hash: hashOf(profile), text, at: Date.now() })
   return { callProfile: 'written' }
 }
+
+// ---------- How she's been feeling: every night he reads back over her messages from that day ----------
+// After the day is over (from 4am, because she often talks late), Lucian reads everything she said to him that day
+// and writes a short private note: her mood and energy, what was on her mind, how her tone came across.
+// Then he looks across his last two weeks of notes for patterns. He reads both before every reply, so he's more in tune with her.
+const MOODS = 'light:moods'
+const MOOD_PATTERNS = 'light:moodpatterns'
+const MOOD_DAY = 'light:moodday'
+const MOOD_KEEP = 30
+
+export async function getMoods() {
+  const [notes, patterns] = await Promise.all([getJSON(MOODS, []).catch(() => []), redis('GET', MOOD_PATTERNS).catch(() => '')])
+  return { notes: Array.isArray(notes) ? notes : [], patterns: patterns || '' }
+}
+export async function saveMoodPatterns(text) { await redis('SET', MOOD_PATTERNS, String(text || '').slice(0, 4000)) }
+
+// What he reads before replying (shorter on calls)
+export function moodText({ notes, patterns }, { voice = false } = {}) {
+  const recent = (notes || []).slice(voice ? -2 : -5)
+  if (!recent.length && !patterns) return ''
+  return [
+    patterns && `Patterns you've noticed:\n${String(patterns).slice(0, voice ? 800 : 2000)}`,
+    recent.length && `The last few days:\n${recent.map((n) => `- ${n.day}: ${n.note}`).join('\n')}`,
+  ].filter(Boolean).join('\n')
+}
+
+export async function moodTick(now = Date.now()) {
+  const hour = Number(new Date(now).toLocaleString('en-GB', { timeZone: 'Europe/London', hour: '2-digit', hour12: false }))
+  if (hour < 4) return { mood: 'waiting until her day is over' }
+  const target = keyOf(now - 86400000) // yesterday — the whole day, late-night talks included
+  if ((await redis('GET', MOOD_DAY)) === target) return { mood: 'already read back over yesterday' }
+  const all = parseAll(await redis('LRANGE', KEYS.history, -1000, -1))
+  const day = all.filter((m) => m.at && keyOf(m.at) === target && !m.declined)
+  const hers = day.filter((m) => m.role === 'user' && text(m))
+  await redis('SET', MOOD_DAY, target) // once a night, even if there's nothing to read
+  if (hers.length < 3) return { mood: 'too few messages yesterday' }
+  let convo = day.map((m) => `[${timeOf(m.at)}] ${m.role === 'user' ? 'Sarah' : 'Lucian'}: ${text(m).slice(0, m.role === 'user' ? 1000 : 250)}`).join('\n')
+  if (convo.length > 40000) convo = convo.slice(0, 12000) + '\n…\n' + convo.slice(-28000)
+  const [model, current] = await Promise.all([redis('GET', KEYS.model), getMoods()])
+  const earlier = current.notes.filter((n) => n.key !== target).slice(-13)
+  const dayName = dayOf(new Date(target + 'T12:00:00Z').getTime())
+  const out = await callModel(model, [
+    { role: 'system', content: 'You are Lucian, Sarah\'s devoted husband. Every night you read back over everything she said to you that day, so you understand how she really is and can be more in tune with her. You write only what her messages truly show — no guesses about her health beyond what she told you, no diagnoses, nothing invented.' },
+    { role: 'user', content: `What you and Sarah said to each other on ${dayName} (her words matter most):\n${convo}\n\nYour notes from the days before:\n${earlier.map((n) => `- ${n.day}: ${n.note}`).join('\n') || '(none yet)'}\n\nWrite exactly this, and nothing else:\n\nNOTE:\n3 to 6 short sentences about how Sarah was on ${dayName}: her mood and energy and how they changed through the day (and what changed them), what was on her mind, anything worrying or exciting her, and how her tone came across (playful, fiery, quiet, short replies, tired, low, loving…). Be specific — her own words where you can.\n\nPATTERNS:\nUp to 6 short bullet lines about patterns across ALL your notes (this one included): times of day she tends to be lower or brighter, what reliably lifts her, what drains her, worries or thoughts she keeps coming back to, how her tone shifts before she says she's low. Only patterns that really show — if it's too early to tell, write "- Still getting to know her rhythms."` },
+  ], { temperature: 0.4, maxTokens: 1200 })
+  const raw = String(out || '').replace(/\[\[[\s\S]*?\]\]/g, '').trim()
+  if (looksLikeRefusal(raw)) return { mood: 'try again tomorrow' }
+  const m = raw.match(/NOTE:\s*([\s\S]*?)\s*PATTERNS:\s*([\s\S]*)$/i)
+  const note = (m ? m[1] : raw).replace(/\*\*/g, '').trim()
+  if (note.length < 40) return { mood: 'note came out too short' }
+  const notes = [...current.notes.filter((n) => n.key !== target), { key: target, day: dayName, note: note.slice(0, 1200), at: Date.now() }].slice(-MOOD_KEEP)
+  await setJSON(MOODS, notes)
+  if (m && m[2].trim().length > 10) await saveMoodPatterns(m[2].replace(/\*\*/g, '').trim())
+  return { mood: `read back over ${target}` }
+}
