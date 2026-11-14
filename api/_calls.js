@@ -7,7 +7,7 @@ import {
 } from './_lib.js'
 import { sendToAll } from './_push.js'
 import { workContext } from './_work.js'
-import { getHeart } from './_recall.js'
+import { getHeart, getMoods, moodText } from './_recall.js'
 import { plansContext } from './_plans.js'
 import { onThisDay, markOnThisDay } from './_onthisday.js'
 
@@ -50,6 +50,9 @@ ${lifeText(life) || '- (nothing yet today)'}
 
 What you've learned about her heart (what makes her laugh, smile, feel loved — and what to avoid):
 ${String(await getHeart().catch(() => '')).replace(/## In intimate moments[\s\S]*?(?=\n## |$)/, '').slice(0, 2500) || '- (still learning)'}
+
+How she's been feeling lately (your own nightly notes from reading back over her messages):
+${moodText(await getMoods().catch(() => ({ notes: [], patterns: '' })), { voice: true }) || '- (still getting to know her rhythms)'}
 
 What you've been reading and working on:
 ${ctx.text || '- (nothing yet)'}
