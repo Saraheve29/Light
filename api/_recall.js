@@ -181,6 +181,19 @@ export async function diaryTick() {
 const HEART = 'light:heart'
 export const HEART_SECTIONS = ['What makes her laugh', 'What makes her smile and feel loved', 'What lifts her when she’s low', 'What makes her sad', 'What makes her angry or annoyed', 'Things she loves', 'In intimate moments: what she loves and what takes her over the edge', 'Things to avoid']
 export async function getHeart() { return (await redis('GET', HEART)) || '' }
+// Which parts of her heart map he still knows little about — so he can ask her about them, naturally, over time
+export function heartGaps(map) {
+  const thin = []
+  for (const h of HEART_SECTIONS) {
+    const i = String(map || '').indexOf(`## ${h}`)
+    if (i < 0) { thin.push(h); continue }
+    const rest = String(map).slice(i + h.length + 3)
+    const body = rest.split(/\n## /)[0]
+    const lines = body.split('\n').filter((l) => /^\s*[-*•]\s*\S/.test(l) && !/still learning|nothing yet|not yet/i.test(l))
+    if (lines.length < 3) thin.push(h)
+  }
+  return thin.filter((h) => !/intimate/i.test(h)) // never quiz her about intimacy — he learns that in the moment
+}
 export async function saveHeart(text) { await redis('SET', HEART, String(text || '').slice(0, 12000)) }
 
 export async function heartTick() {
