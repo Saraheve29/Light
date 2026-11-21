@@ -2,11 +2,21 @@ import { checkAuth } from './_lib.js'
 
 // Turns Sarah's recorded voice into words (used on calls — no phone beeps).
 // POST { audio: 'data:audio/webm;base64,...' } → { text }
-// Uses NanoGPT speech-to-text. Tries Whisper first, then two others if it fails.
+// Uses NanoGPT speech-to-text. gpt-4o-mini-transcribe first (better with British accents and quiet,
+// late-night voices, and it makes up fewer words), then Whisper and Wizper if it fails.
 
 const STT_URL = 'https://api.nano-gpt.com/api/v1/audio/transcriptions'
 const KEY = process.env.NANOGPT_API_KEY
-const MODELS = ['Whisper-Large-V3', 'gpt-4o-mini-transcribe', 'Wizper']
+const MODELS = ['gpt-4o-mini-transcribe', 'Whisper-Large-V3', 'Wizper']
+
+// A hint for the listener: who's talking, the names it will hear, and what she said just before this piece
+// (each piece of a long turn is heard separately, so this keeps sentences joined up)
+const NAMES = 'Lucian, Sarah, Maleeka, Kai, Elias, Light, Spirit, Rover, March, Cambridgeshire, Lovense'
+function hintFor(before) {
+  const lead = `Sarah, a British woman, talking on a call to her husband Lucian. British English. Names: ${NAMES}.`
+  const prev = String(before || '').replace(/\s+/g, ' ').trim().slice(-300)
+  return prev ? `${lead} She just said: ${prev}` : lead
+}
 
 function extFor(type) {
   if (type.includes('mp4') || type.includes('m4a') || type.includes('aac')) return 'm4a'
@@ -16,11 +26,13 @@ function extFor(type) {
   return 'webm'
 }
 
-async function transcribe(model, buf, type) {
+async function transcribe(model, buf, type, prompt) {
   const form = new FormData()
   form.append('file', new Blob([buf], { type }), `voice.${extFor(type)}`)
   form.append('model', model)
   form.append('language', 'en')
+  if (prompt) form.append('prompt', prompt)
+  form.append('temperature', '0') // stick to what was really said
   const r = await fetch(STT_URL, { method: 'POST', headers: { 'x-api-key': KEY }, body: form })
   const data = await r.json().catch(() => ({}))
   if (!r.ok) {
@@ -54,10 +66,17 @@ export default async function handler(req, res) {
     const buf = Buffer.from(m[2], 'base64')
     if (buf.length < 1200) return res.status(200).json({ text: '' }) // too short to hold words
 
+    const prompt = hintFor(req.body?.before)
     let lastErr
     for (const model of MODELS) {
       try {
-        const text = await transcribe(model, buf, type)
+        // (if a listener doesn't accept the hint, ask it again without)
+        const text = await transcribe(model, buf, type, prompt).catch((err) => {
+          if (/prompt|temperature|param|unsupported|unknown|invalid/i.test(String(err.message))) return transcribe(model, buf, type)
+          throw err
+        })
+        // A listener can echo the hint back when there's silence — that's not her words either
+        if (/talking on a call to her husband|British English\. Names:|She just said:/i.test(text)) return res.status(200).json({ text: '', model })
         // Voice-to-words services sometimes "hear" these in silence or noise — they're not her words
         return res.status(200).json({ text: notReallySaid(text) ? '' : text, model })
       } catch (err) { lastErr = err }
