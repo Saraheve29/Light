@@ -1625,7 +1625,8 @@ function CallView({ pass, onEnd, incoming = false }) {
         recordedRef.current += Date.now() - piece.startedAt
         const blob = new Blob(chunks, { type: recorder.mimeType || mimeRef.current || 'audio/webm' })
         const job = (blob.size < 1200 ? Promise.resolve('') : blobToDataUrl(blob)
-          .then((audio) => api('/api/hear', pass, { method: 'POST', body: JSON.stringify({ audio }) }))
+          // (what she'd said just before this piece — helps the listener keep her sentences joined up)
+          .then((audio) => api('/api/hear', pass, { method: 'POST', body: JSON.stringify({ audio, before: textsRef.current.slice(0, idx).filter(Boolean).join(' ').slice(-300) }) }))
           .then((d) => d.text || ''))
           .then((text) => { if (gen === genRef.current) { textsRef.current[idx] = text; showHeard() } })
           .catch((err) => { if (gen === genRef.current) setError(err.message) })
