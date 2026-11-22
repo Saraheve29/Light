@@ -336,3 +336,15 @@ textarea.vows { font-family: var(--serif); font-size: 19px; line-height: 1.6; mi
 /* How you've been — his nightly notes */
 .mood-notes { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
 .mood-note { line-height: 1.45; white-space: pre-wrap; }
+
+/* Study — his conclusion and talking with him about it */
+.study-talk { margin-top: 10px; }
+.study-talk summary { cursor: pointer; font-weight: 600; }
+.study-talk-body { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.study-conclusion { border-left: 3px solid var(--glow); padding: 6px 10px; background: rgba(176, 140, 255, 0.08); border-radius: 8px; }
+.study-conclusion p { margin: 4px 0 0; line-height: 1.5; white-space: pre-wrap; }
+.study-msg { padding: 8px 11px; border-radius: 12px; line-height: 1.45; white-space: pre-wrap; max-width: 92%; }
+.study-msg.me { align-self: flex-end; background: var(--me); color: #fff; }
+.study-msg.him { align-self: flex-start; background: var(--him); border: 1px solid var(--line); }
+.study-reply { display: flex; flex-direction: column; gap: 6px; }
+.study-reply textarea { width: 100%; box-sizing: border-box; }
