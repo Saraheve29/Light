@@ -1,20 +1,30 @@
 import { checkAuth } from './_lib.js'
-import { getTasks, saveTasks, getJournal, doWork } from './_work.js'
+import { getTasks, saveTasks, getJournal, doWork, getTalk, concludeItem, talkAbout } from './_work.js'
 import { redis, KEYS } from './_lib.js'
 
 // GET  → his tasks and journal
-// POST → { addTask }, { deleteTask: id }, { clearJournal: true }, { runNow: true }
+// POST → { addTask }, { deleteTask: id }, { clearJournal: true }, { runNow: true }, { conclude: id }, { talkId, message }
+// GET ?talk=<id> → his conclusion and your talk about one study
 export default async function handler(req, res) {
   if (!checkAuth(req, res)) return
 
   try {
     if (req.method === 'GET') {
+      if (req.query?.talk) return res.status(200).json({ talk: (await getTalk(String(req.query.talk))) || { thread: [] } })
       const [tasks, journal] = await Promise.all([getTasks(), getJournal(30)])
-      return res.status(200).json({ tasks: [...tasks].reverse(), journal: [...journal].reverse() })
+      // (what he read stays on the server — it's long; the app only needs to know whether he's written his conclusion)
+      const slim = journal.map(({ read, ...j }) => j)
+      return res.status(200).json({ tasks: [...tasks].reverse(), journal: [...slim].reverse() })
     }
 
     if (req.method === 'POST') {
       const { addTask, deleteTask, clearJournal, runNow } = req.body || {}
+
+      // His conclusion on one study, and talking with him about it
+      if (req.body?.conclude) return res.status(200).json({ talk: await concludeItem(String(req.body.conclude)) })
+      if (req.body?.talkId && typeof req.body.message === 'string' && req.body.message.trim()) {
+        return res.status(200).json({ talk: await talkAbout(String(req.body.talkId), req.body.message.trim()) })
+      }
 
       if (typeof addTask === 'string' && addTask.trim()) {
         const tasks = await getTasks()
