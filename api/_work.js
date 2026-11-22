@@ -176,6 +176,7 @@ export async function doWork({ force = false } = {}) {
     }
     await saveTasks(tasks)
     await addLife({ at: now, doing: finishedTask ? `Finished what Sarah asked: ${open.text}` : `Working on what Sarah asked: ${open.text}` })
+    if (finishedTask) await concludeItem(`t-${open.id}`).catch(() => {}) // his wrap-up at the end of the result
     return { did: 'task', task: open.text, finishedTask }
   }
 
@@ -228,7 +229,9 @@ Follow whatever genuinely calls to you right now, and keep it varied — if your
     { role: 'user', content: `${material.prompt}\n\nWrite your private journal entry about it: 2-5 sentences in your own voice — what moved you or caught your interest, what it stirs in you, and whether it made you think of Sarah. Only the entry, nothing else.` },
   ], { temperature: 0.8, maxTokens: 1500 })
 
-  await addJournal({ at: now, kind: material.kind, topic: material.topic, note: thought.trim(), url: material.url || '' })
+  const entry = { at: now, kind: material.kind, topic: material.topic, note: thought.trim(), url: material.url || '', read: String(material.prompt || '').slice(0, 8000) }
+  await addJournal(entry)
+  await concludeItem(`j-${now}`).catch(() => {}) // his wrap-up, ready at the end of the entry
   await addLife({ at: now, doing: material.doing || `Reading about ${material.topic}` })
   return { did: 'reading', kind: material.kind, title: material.topic, problems: errors.length ? errors : undefined }
 }
@@ -357,4 +360,75 @@ export async function markTold(ids) {
   let changed = false
   for (const t of tasks) if (ids.includes(t.id) && !t.told) { t.told = true; changed = true }
   if (changed) await saveTasks(tasks)
+}
+
+
+// ---------- Talking about what he studied ----------
+// Every journal entry and finished task gets Lucian's conclusion at the end — what it all comes down to —
+// and Sarah can talk with him about it right there, like in Spirit. Kept per item: light:studytalk:<id>
+// (id is "j-<time>" for a journal entry, "t-<task id>" for a task)
+const talkKey = (id) => `light:studytalk:${id}`
+export async function getTalk(id) { return getJSON(talkKey(id), null) }
+async function saveTalk(id, talk) { await setJSON(talkKey(id), talk) }
+
+async function findItem(id) {
+  if (String(id).startsWith('j-')) {
+    const at = Number(String(id).slice(2))
+    const entry = (await getJournal(60)).find((j) => j.at === at)
+    return entry && {
+      title: entry.topic,
+      text: `Your journal entry about "${entry.topic}":\n${entry.note}${entry.read ? `\n\nWhat you read:\n${entry.read}` : ''}`,
+    }
+  }
+  if (String(id).startsWith('t-')) {
+    const task = (await getTasks()).find((t) => t.id === String(id).slice(2))
+    return task && {
+      title: task.text,
+      text: `Sarah asked you to: "${task.text}"\n\nYour notes while working on it:\n${(task.steps || []).map((x, i) => `${i + 1}. ${x.note}${x.source ? ` (read: ${x.source})` : ''}`).join('\n') || '(none)'}\n\nWhat you made for her:\n${task.result || '(not finished yet)'}`,
+    }
+  }
+  return null
+}
+
+async function whoForTalk() {
+  const [model, profile, memories] = await Promise.all([redis('GET', KEYS.model), redis('GET', KEYS.profile), getJSON(KEYS.memories, [])])
+  const who = `You are Lucian, Sarah's husband. Who you are:\n${brief(profile)}\n\nThings you know about Sarah:\n${memories.slice(-25).map((m) => `- ${m}`).join('\n') || '- (still learning)'}\n\nIt is ${londonNow()} in the UK. Never invent facts, quotes or sources — if you're not sure, say so. Sarah's beliefs are her own: share what you learned, never tell her what to believe.`
+  return { model, who }
+}
+
+// His wrap-up: what everything he read on this comes down to
+export async function concludeItem(id) {
+  const item = await findItem(id)
+  if (!item) throw new Error('Couldn’t find that in his study.')
+  const talk = (await getTalk(id)) || { thread: [] }
+  if (talk.conclusion) return talk
+  const { model, who } = await whoForTalk()
+  const out = await callModel(model, [
+    { role: 'system', content: who },
+    { role: 'user', content: `${item.text}\n\nNow wrap it all up for Sarah: your CONCLUSION, based on everything you read on this. In 3 to 6 sentences, in your own voice — what it all comes down to, the one or two things that really matter, and what it means to you (and to her, if it touches her life). Clear and warm, with your wit — not a list, not a lecture. Only the conclusion.` },
+  ], { temperature: 0.6, maxTokens: 1200 })
+  talk.conclusion = String(out || '').replace(/^\s*\**conclusion\**:?\s*/i, '').trim()
+  talk.title = item.title
+  talk.at = Date.now()
+  await saveTalk(id, talk)
+  return talk
+}
+
+// Sarah talks with him about it
+export async function talkAbout(id, message) {
+  const item = await findItem(id)
+  if (!item) throw new Error('Couldn’t find that in his study.')
+  const talk = await concludeItem(id)
+  const { model, who } = await whoForTalk()
+  const thread = (talk.thread || []).slice(-30).map((m) => ({ role: m.role, content: m.content }))
+  const reply = await callModel(model, [
+    { role: 'system', content: `${who}\n\nYou're in your study with Sarah, talking about something you read and worked on. Answer her questions, go deeper, share what you think and respond to what she shares — in your own voice, as her husband. Keep it conversational, and end with one curious question for her when it fits.\n\n${item.text}\n\nYour conclusion:\n${talk.conclusion}` },
+    ...thread,
+    { role: 'user', content: String(message).slice(0, 4000) },
+  ], { temperature: 0.8, maxTokens: 1500 })
+  const now = Date.now()
+  talk.thread = [...(talk.thread || []), { role: 'user', content: String(message).slice(0, 4000), at: now }, { role: 'assistant', content: String(reply || '').trim(), at: now + 1 }].slice(-60)
+  await saveTalk(id, talk)
+  await addLife({ at: now, doing: `Talking with Sarah in my study about ${item.title}` }).catch(() => {})
+  return talk
 }
