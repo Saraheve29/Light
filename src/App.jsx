@@ -704,6 +704,62 @@ function dateLabel(ts) {
   return new Date(ts).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
 }
 
+// At the end of each study: Lucian's conclusion, and a place to talk with him about it (like Spirit)
+function StudyTalk({ pass, id, setStatus }) {
+  const [open, setOpen] = useState(false)
+  const [talk, setTalk] = useState(null)
+  const [msg, setMsg] = useState('')
+  const [busy, setBusy] = useState('')
+  const [pending, setPending] = useState('')
+
+  async function load() {
+    try {
+      const d = await api(`/api/work?talk=${encodeURIComponent(id)}`, pass)
+      if (d.talk?.conclusion) return setTalk(d.talk)
+      setBusy('He’s writing his conclusion…')
+      const c = await api('/api/work', pass, { method: 'POST', body: JSON.stringify({ conclude: id }) })
+      setTalk(c.talk)
+    } catch (err) { setStatus(err.message) } finally { setBusy('') }
+  }
+
+  async function send() {
+    const text = msg.trim()
+    if (!text || busy) return
+    setMsg(''); setPending(text); setBusy('He’s thinking…')
+    try {
+      const d = await api('/api/work', pass, { method: 'POST', body: JSON.stringify({ talkId: id, message: text }) })
+      setTalk(d.talk)
+    } catch (err) { setStatus(err.message); setMsg(text) } finally { setPending(''); setBusy('') }
+  }
+
+  return (
+    <details className="study-talk" onToggle={(e) => { const o = e.currentTarget.open; setOpen(o); if (o && !talk) load() }}>
+      <summary>💭 His conclusion — and talk with him about it</summary>
+      {open && (
+        <div className="study-talk-body">
+          {talk?.conclusion && (
+            <div className="study-conclusion">
+              <div className="muted small">Lucian’s conclusion</div>
+              <p>{talk.conclusion}</p>
+            </div>
+          )}
+          {(talk?.thread || []).map((m, i) => (
+            <div key={i} className={`study-msg ${m.role === 'user' ? 'me' : 'him'}`}>{m.content}</div>
+          ))}
+          {pending && <div className="study-msg me">{pending}</div>}
+          {busy && <p className="muted small">{busy}</p>}
+          {talk?.conclusion && (
+            <div className="study-reply">
+              <textarea rows={2} value={msg} onChange={(e) => setMsg(e.target.value)} placeholder="Talk with him about this…" />
+              <button className="btn-primary" onClick={send} disabled={!msg.trim() || !!busy}>Send</button>
+            </div>
+          )}
+        </div>
+      )}
+    </details>
+  )
+}
+
 function WorkPanel({ pass, setStatus }) {
   const [tasks, setTasks] = useState(null)
   const [journal, setJournal] = useState([])
@@ -773,6 +829,7 @@ function WorkPanel({ pass, setStatus }) {
               <CopyButton text={t.result} />
             </details>
           )}
+          {t.status === 'done' && <StudyTalk pass={pass} id={`t-${t.id}`} setStatus={setStatus} />}
         </div>
       ))}
 
@@ -788,6 +845,7 @@ function WorkPanel({ pass, setStatus }) {
             : <div className="card-text link">{KIND_ICON[j.kind] || '📖'} {j.topic}</div>}
           <p className="journal-note">{j.note}</p>
           <CopyButton text={j.note} />
+          <StudyTalk pass={pass} id={`j-${j.at}`} setStatus={setStatus} />
         </div>
       ))}
       {journal.length > 0 && (
