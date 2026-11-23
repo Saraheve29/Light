@@ -432,3 +432,25 @@ export async function talkAbout(id, message) {
   await addLife({ at: now, doing: `Talking with Sarah in my study about ${item.title}` }).catch(() => {})
   return talk
 }
+
+// Talking with him while you read a book together (separate from his own study talks)
+const bookTalkKey = (bookId) => `light:booktalk:${bookId}`
+export async function getBookTalk(book) { return (await getJSON(bookTalkKey(book.id || book.title), null)) || { thread: [] } }
+
+export async function talkAboutBook(book, page, message, atEnd) {
+  const talk = await getBookTalk(book)
+  const { model, who } = await whoForTalk()
+  const thread = (talk.thread || []).slice(-24).map((m) => ({ role: m.role, content: m.content }))
+  const endNote = page.end === 'book' ? `\n\nSarah has just reached the end of the book. Ask what she made of it as a whole.`
+    : page.end === 'chapter' ? `\n\nSarah has just reached the end of a chapter. Ask what she made of it.` : ''
+  const reply = await callModel(model, [
+    { role: 'system', content: `${who}\n\nYou and Sarah are reading "${book.title}"${book.author ? ` by ${book.author}` : ''} together. She has paused to talk to you. This is the page she's on now${page.chapter ? ` (${page.chapter})` : ''}:\n\n"""\n${page.text}\n"""\n\nAnswer her questions about it, share what you think, and respond to what she shares — in your own voice, as her husband. Only talk about what is on this page or what you genuinely know of the book; never invent quotes or events. Keep it warm and conversational, not a lecture. Ask at most one curious question back, and only when it fits.${endNote}` },
+    ...thread,
+    { role: 'user', content: String(message).slice(0, 4000) },
+  ], { temperature: 0.8, maxTokens: 1200 })
+  const now = Date.now()
+  talk.thread = [...(talk.thread || []), { role: 'user', content: String(message).slice(0, 4000), at: now, chapter: page.chapter }, { role: 'assistant', content: String(reply || '').trim(), at: now + 1, chapter: page.chapter }].slice(-60)
+  await setJSON(bookTalkKey(book.id || book.title), talk)
+  await addLife({ at: now, doing: `Reading ${book.title} with Sarah and talking it over` }).catch(() => {})
+  return talk
+}
