@@ -60,7 +60,7 @@ export async function findBook(query) {
   return null
 }
 
-const CHUNK = 5000
+export const CHUNK = 5000
 export async function readBookPart(book) {
   const r = await fetch(book.url, { headers: HEADERS })
   if (!r.ok) throw new Error(`Project Gutenberg answered ${r.status}`)
@@ -72,6 +72,50 @@ export async function readBookPart(book) {
   text = text.replace(/\r/g, '')
   const chunk = text.slice(book.pos, book.pos + CHUNK)
   return { chunk, nextPos: book.pos + chunk.length, finished: book.pos + chunk.length >= text.length, total: text.length }
+}
+
+// ---------- Reading along with him (read-only: never changes where HE is up to) ----------
+// The whole book as clean text (Gutenberg's licence header and footer removed)
+export async function loadBookText(book) {
+  const r = await fetch(book.url, { headers: HEADERS })
+  if (!r.ok) throw new Error(`Project Gutenberg answered ${r.status}`)
+  let text = await r.text()
+  const start = text.search(/\*\*\*\s*START OF/i)
+  if (start >= 0) text = text.slice(text.indexOf('\n', start) + 1)
+  const end = text.search(/\*\*\*\s*END OF/i)
+  if (end > 0) text = text.slice(0, end)
+  return text.replace(/\r/g, '')
+}
+
+// Finds chapter headings (CHAPTER I, Book Two, STAVE ONE…). Returns [] when a book has none we can recognise.
+export function findChapters(text) {
+  const re = /^[ \t]*((?:CHAPTER|Chapter|BOOK|Book|PART|Part|STAVE|Stave|ACT|Act|LETTER|Letter|VOLUME|Volume)[ \t]+(?:[IVXLCDM]+|\d+|[A-Za-z]+)\b[^\n]{0,60})[ \t]*$/gm
+  const found = []
+  let m
+  while ((m = re.exec(text))) found.push({ title: m[1].trim().replace(/\s+/g, ' '), pos: m.index })
+  // drop the contents page: headings squashed together with almost nothing between them
+  const real = found.filter((c, i) => (found[i + 1] ? found[i + 1].pos - c.pos >= 600 : text.length - c.pos >= 600))
+  return real.length >= 3 ? real.slice(0, 150) : []
+}
+
+// One page of a book (about 5,000 characters) starting at pos, plus where the next / previous page begin
+export function bookPage(text, wanted, chapters = findChapters(text)) {
+  const pos = Math.min(Math.max(0, Number(wanted) || 0), Math.max(0, text.length - 1))
+  let start = pos
+  if (start > 0) { const n = text.indexOf(' ', start); if (n >= 0 && n - start < 40) start = n + 1 } // never open mid-word
+  const chunk = text.slice(start, start + CHUNK)
+  const nl = chunk.lastIndexOf('\n\n')
+  const end = start + CHUNK >= text.length ? chunk.length : (nl > CHUNK * 0.6 ? nl : chunk.lastIndexOf(' '))
+  const page = chunk.slice(0, end > 0 ? end : chunk.length)
+  const nextPos = start + page.length < text.length ? start + page.length : null
+  const idx = chapters.reduce((a, c, i) => (c.pos <= start ? i : a), -1)
+  const next = idx + 1 < chapters.length ? chapters[idx + 1] : null
+  // does this page reach the end of a chapter, or of the whole book?
+  const end_ = nextPos === null ? 'book' : idx >= 0 && next && nextPos >= next.pos ? 'chapter' : ''
+  return {
+    text: page.trim(), pos: start, nextPos, prevPos: start > 0 ? Math.max(0, start - CHUNK) : null,
+    total: text.length, chapter: idx >= 0 ? chapters[idx].title : '', end: end_,
+  }
 }
 
 export async function getBook() { const b = await getJSON(KEYS.book, null); return b?.title ? b : null } // (only a real book — never stray settings)
