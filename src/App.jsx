@@ -892,7 +892,7 @@ function ReadIt({ pass, at, setStatus }) {
       {open && (
         <div className="reader">
           {text === null ? <p className="muted">Finding it…</p>
-            : text ? <div className="reader-text">{text}{more ? '\n\n…' : ''}</div>
+            : text ? <><div className="reader-text">{text}{more ? '\n\n…' : ''}</div><HearButton pass={pass} text={text} setStatus={setStatus} label="🔊 Hear him read this" /></>
             : <p className="muted">I can’t find the words for this one any more.</p>}
         </div>
       )}
@@ -1019,6 +1019,7 @@ function BookReader({ pass, setStatus }) {
           <div className="reader">
             {page.chapter && <div className="muted small">{page.chapter}</div>}
             <div className="reader-text">{page.text}</div>
+            <HearButton key={page.pos} pass={pass} text={page.text} setStatus={setStatus} label="🔊 Hear him read this" />
             <div className="reader-actions">
               <button type="button" className="btn-ghost" disabled={busy || page.prevPos === null} onClick={() => go(page.prevPos)}>← Back</button>
               <button type="button" className="btn-ghost" disabled={busy || page.nextPos === null} onClick={() => go(page.nextPos)}>Next →</button>
@@ -1926,6 +1927,7 @@ function CallView({ pass, onEnd, incoming = false }) {
             const level = Math.sqrt(sum / data.length)
             levelRef.current = level
             if (level < 0.02) { if (!quietSinceRef.current) quietSinceRef.current = Date.now() } else quietSinceRef.current = 0
+            if (level > 0.035 && recRef.current) recRef.current.voiced = (recRef.current.voiced || 0) + 1 // she's actually speaking in this piece
             if (orbRef.current) orbRef.current.style.setProperty('--lvl', recRef.current ? Math.min(1, level * 6).toFixed(3) : '0')
             raf = requestAnimationFrame(loop)
           }
@@ -1978,9 +1980,10 @@ function CallView({ pass, onEnd, incoming = false }) {
         if (gen !== genRef.current) return resolve()
         recordedRef.current += Date.now() - piece.startedAt
         const blob = new Blob(chunks, { type: recorder.mimeType || mimeRef.current || 'audio/webm' })
-        const job = (blob.size < 1200 ? Promise.resolve('') : blobToDataUrl(blob)
-          // (what she'd said just before this piece — helps the listener keep her sentences joined up)
-          .then((audio) => api('/api/hear', pass, { method: 'POST', body: JSON.stringify({ audio, before: textsRef.current.slice(0, idx).filter(Boolean).join(' ').slice(-300) }) }))
+        // A piece with no voice in it (she's stepped away, or it's quiet) is never sent to be heard —
+        // listeners invent words from silence
+        const job = (blob.size < 1200 || (piece.voiced || 0) < 8 ? Promise.resolve('') : blobToDataUrl(blob)
+          .then((audio) => api('/api/hear', pass, { method: 'POST', body: JSON.stringify({ audio }) }))
           .then((d) => d.text || ''))
           .then((text) => { if (gen === genRef.current) { textsRef.current[idx] = text; showHeard() } })
           .catch((err) => { if (gen === genRef.current) setError(err.message) })
