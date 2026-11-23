@@ -348,3 +348,10 @@ textarea.vows { font-family: var(--serif); font-size: 19px; line-height: 1.6; mi
 .study-msg.him { align-self: flex-start; background: var(--him); border: 1px solid var(--line); }
 .study-reply { display: flex; flex-direction: column; gap: 6px; }
 .study-reply textarea { width: 100%; box-sizing: border-box; }
+
+/* Reading along with Lucian */
+.reader { margin-top: 8px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: rgba(0, 0, 0, 0.18); display: flex; flex-direction: column; gap: 8px; }
+.reader-text { white-space: pre-wrap; font-family: var(--serif); font-size: 17px; line-height: 1.65; overflow-wrap: anywhere; }
+.reader-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.reader-select { width: 100%; padding: 11px 12px; border-radius: 14px; border: 1px solid var(--line); background: var(--bg-2); color: inherit; font-size: 15px; }
+.reader-talk { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--line); }
