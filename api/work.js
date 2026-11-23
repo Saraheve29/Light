@@ -1,7 +1,10 @@
 import { checkAuth } from './_lib.js'
 import { getTasks, saveTasks, getJournal, doWork, getTalk, concludeItem, talkAbout, getBookTalk, talkAboutBook } from './_work.js'
 import { redis, KEYS } from './_lib.js'
-import { getBook, loadBookText, findChapters, bookPage, CHUNK } from './_sources.js'
+import { getBook, getReadWith, saveReadWith, findBook, loadBookText, findChapters, bookPage, CHUNK } from './_sources.js'
+
+// The book you're reading together: one you picked, otherwise the one he's in the middle of
+async function activeBook() { return (await getReadWith()) || (await getBook()) }
 
 // GET  → his tasks and journal
 // POST → { addTask }, { deleteTask: id }, { clearJournal: true }, { runNow: true }, { conclude: id }, { talkId, message }
@@ -23,24 +26,28 @@ export default async function handler(req, res) {
         return res.status(200).json({ text: (i >= 0 ? e.read.slice(i + 2) : e.read).trim(), truncated: e.read.length >= 8000 })
       }
       if (req.query?.bookInfo) {
-        const book = await getBook()
+        const [mine, his] = await Promise.all([getReadWith(), getBook()])
+        const book = mine || his
         if (!book) return res.status(200).json({ book: null })
         const text = await loadBookText(book)
         const chapters = findChapters(text)
-        const hisPos = Math.max(0, (book.pos || 0) - CHUNK) // the start of the part he read last
-        const here = [...chapters].reverse().find((c) => c.pos <= hisPos)
+        const hisPos = mine ? 0 : Math.max(0, (book.pos || 0) - CHUNK) // the start of the part he read last
+        const here = mine ? null : [...chapters].reverse().find((c) => c.pos <= hisPos)
         return res.status(200).json({
-          book: { title: book.title, author: book.author || '', hisPos, total: text.length, chapters, hisChapter: here ? here.title : '', part: book.part || 0 },
+          book: {
+            title: book.title, author: book.author || '', hisPos, total: text.length, chapters,
+            hisChapter: here ? here.title : '', part: mine ? 0 : book.part || 0, hers: !!mine, hisTitle: his?.title || '',
+          },
         })
       }
       if (req.query?.bookRead !== undefined) {
-        const book = await getBook()
+        const book = await activeBook()
         if (!book) return res.status(200).json({ text: '' })
         const text = await loadBookText(book)
         return res.status(200).json(bookPage(text, req.query.bookRead))
       }
       if (req.query?.bookTalk) {
-        const book = await getBook()
+        const book = await activeBook()
         if (!book) return res.status(200).json({ thread: [] })
         return res.status(200).json({ thread: (await getBookTalk(book)).thread || [] })
       }
@@ -60,10 +67,21 @@ export default async function handler(req, res) {
         return res.status(200).json({ talk: await talkAbout(String(req.body.talkId), req.body.message.trim()) })
       }
 
+      // Choosing a book to read together (or going back to his own book)
+      if (req.body && 'readWith' in req.body) {
+        if (req.body.readWith === null) { await saveReadWith(null); return res.status(200).json({ ok: true }) }
+        const q = String(req.body.readWith?.query || '').trim().slice(0, 100)
+        if (!q) throw new Error('Type the name of a book first.')
+        const found = await findBook(q)
+        if (!found) throw new Error(`I couldn’t find “${q}” as a free book. Try another name.`)
+        await saveReadWith({ id: found.id, title: found.title, author: found.author, url: found.url })
+        return res.status(200).json({ ok: true, title: found.title })
+      }
+
       // Talking with him about the page you're reading in the book
       if (req.body?.bookTalk && typeof req.body.bookTalk.message === 'string' && req.body.bookTalk.message.trim()) {
-        const book = await getBook()
-        if (!book) throw new Error('He isn’t reading a book right now.')
+        const book = await activeBook()
+        if (!book) throw new Error('There isn’t a book open right now.')
         const page = bookPage(await loadBookText(book), req.body.bookTalk.pos)
         return res.status(200).json({ thread: (await talkAboutBook(book, page, req.body.bookTalk.message.trim())).thread })
       }
