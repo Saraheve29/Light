@@ -1,7 +1,7 @@
 import { checkAuth } from './_lib.js'
 import { getTasks, saveTasks, getJournal, doWork, getTalk, concludeItem, talkAbout, getBookTalk, talkAboutBook } from './_work.js'
 import { redis, KEYS } from './_lib.js'
-import { getBook, getReadWith, saveReadWith, findBook, loadBookText, findChapters, bookPage, CHUNK } from './_sources.js'
+import { getBook, getReadWith, saveReadWith, findBook, bookById, findBookMatch, chapterMention, matchChapter, findPoemByLines, loadBookText, findChapters, bookPage, CHUNK } from './_sources.js'
 
 // The book you're reading together: one you picked, otherwise the one he's in the middle of
 async function activeBook() { return (await getReadWith()) || (await getBook()) }
@@ -22,8 +22,10 @@ export default async function handler(req, res) {
         const at = Number(req.query.entry)
         const e = (await getJournal(60)).find((j) => j.at === at)
         if (!e || !e.read) return res.status(200).json({ text: '' })
-        const i = e.read.indexOf('\n\n') // the first line is just "You read this poem…" — leave that out
-        return res.status(200).json({ text: (i >= 0 ? e.read.slice(i + 2) : e.read).trim(), truncated: e.read.length >= 8000 })
+        let t = e.read // drop the "You read…" line he was given, and any instructions on the end — keep only what he read
+        if (/^(You|After your)/.test(t)) { const i = t.indexOf('\n'); t = i >= 0 ? t.slice(i + 1) : t }
+        t = t.replace(/\n\n(Think about how this connects|Pick the one)[\s\S]*$/, '').trim()
+        return res.status(200).json({ text: t, truncated: e.read.length >= 8000 })
       }
       if (req.query?.bookInfo) {
         const [mine, his] = await Promise.all([getReadWith(), getBook()])
@@ -54,7 +56,7 @@ export default async function handler(req, res) {
       if (req.query?.talk) return res.status(200).json({ talk: (await getTalk(String(req.query.talk))) || { thread: [] } })
       const [tasks, journal] = await Promise.all([getTasks(), getJournal(30)])
       // (what he read stays on the server — it's long; the app only needs to know whether he's written his conclusion)
-      const slim = journal.map(({ read, ...j }) => j)
+      const slim = journal.map(({ read, ...j }) => ({ ...j, hasRead: !!read }))
       return res.status(200).json({ tasks: [...tasks].reverse(), journal: [...slim].reverse() })
     }
 
@@ -67,13 +69,37 @@ export default async function handler(req, res) {
         return res.status(200).json({ talk: await talkAbout(String(req.body.talkId), req.body.message.trim()) })
       }
 
+      // An article he read → is there a free book it's about, and which chapter does he mention?
+      if (req.body?.bookForEntry) {
+        const at = Number(req.body.bookForEntry.at)
+        const e = (await getJournal(60)).find((j) => j.at === at)
+        if (!e) throw new Error('I can’t find that entry.')
+        const cand = await findBookMatch(e.topic)
+        if (!cand) return res.status(200).json({ candidate: null })
+        let chapter = null, mention = ''
+        try {
+          const m = chapterMention(e.note) || chapterMention(e.read)
+          if (m) {
+            const c = matchChapter(findChapters(await loadBookText(cand)), m)
+            if (c) { chapter = c; mention = m.label }
+          }
+        } catch {}
+        return res.status(200).json({ candidate: { id: cand.id, title: cand.title, author: cand.author }, chapter, mention })
+      }
+
+      // The whole poem, when he's quoted a line or two of it
+      if (req.body?.findPoem && typeof req.body.findPoem.text === 'string') {
+        return res.status(200).json({ poem: await findPoemByLines(req.body.findPoem.text.slice(0, 4000)) })
+      }
+
       // Choosing a book to read together (or going back to his own book)
       if (req.body && 'readWith' in req.body) {
         if (req.body.readWith === null) { await saveReadWith(null); return res.status(200).json({ ok: true }) }
         const q = String(req.body.readWith?.query || '').trim().slice(0, 100)
-        if (!q) throw new Error('Type the name of a book first.')
-        const found = await findBook(q)
-        if (!found) throw new Error(`I couldn’t find “${q}” as a free book. Try another name.`)
+        const wantId = Number(req.body.readWith?.id) || 0
+        if (!q && !wantId) throw new Error('Type the name of a book first.')
+        const found = wantId ? await bookById(wantId) : await findBook(q)
+        if (!found) throw new Error(wantId ? 'I couldn’t open that book.' : `I couldn’t find “${q}” as a free book. Try another name.`)
         await saveReadWith({ id: found.id, title: found.title, author: found.author, url: found.url })
         return res.status(200).json({ ok: true, title: found.title })
       }
