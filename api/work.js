@@ -1,15 +1,49 @@
 import { checkAuth } from './_lib.js'
-import { getTasks, saveTasks, getJournal, doWork, getTalk, concludeItem, talkAbout } from './_work.js'
+import { getTasks, saveTasks, getJournal, doWork, getTalk, concludeItem, talkAbout, getBookTalk, talkAboutBook } from './_work.js'
 import { redis, KEYS } from './_lib.js'
+import { getBook, loadBookText, findChapters, bookPage, CHUNK } from './_sources.js'
 
 // GET  → his tasks and journal
 // POST → { addTask }, { deleteTask: id }, { clearJournal: true }, { runNow: true }, { conclude: id }, { talkId, message }
 // GET ?talk=<id> → his conclusion and your talk about one study
+// GET ?entry=<at> → the poem / passage he read for one journal entry
+// GET ?bookInfo=1 → the book he's reading now, where he's up to, and its chapters
+// GET ?bookRead=<pos> → one page (about 5,000 characters) of that book, starting at <pos>
 export default async function handler(req, res) {
   if (!checkAuth(req, res)) return
 
   try {
     if (req.method === 'GET') {
+      // Reading along with him — all of this only READS; it never moves his place in the book
+      if (req.query?.entry) {
+        const at = Number(req.query.entry)
+        const e = (await getJournal(60)).find((j) => j.at === at)
+        if (!e || !e.read) return res.status(200).json({ text: '' })
+        const i = e.read.indexOf('\n\n') // the first line is just "You read this poem…" — leave that out
+        return res.status(200).json({ text: (i >= 0 ? e.read.slice(i + 2) : e.read).trim(), truncated: e.read.length >= 8000 })
+      }
+      if (req.query?.bookInfo) {
+        const book = await getBook()
+        if (!book) return res.status(200).json({ book: null })
+        const text = await loadBookText(book)
+        const chapters = findChapters(text)
+        const hisPos = Math.max(0, (book.pos || 0) - CHUNK) // the start of the part he read last
+        const here = [...chapters].reverse().find((c) => c.pos <= hisPos)
+        return res.status(200).json({
+          book: { title: book.title, author: book.author || '', hisPos, total: text.length, chapters, hisChapter: here ? here.title : '', part: book.part || 0 },
+        })
+      }
+      if (req.query?.bookRead !== undefined) {
+        const book = await getBook()
+        if (!book) return res.status(200).json({ text: '' })
+        const text = await loadBookText(book)
+        return res.status(200).json(bookPage(text, req.query.bookRead))
+      }
+      if (req.query?.bookTalk) {
+        const book = await getBook()
+        if (!book) return res.status(200).json({ thread: [] })
+        return res.status(200).json({ thread: (await getBookTalk(book)).thread || [] })
+      }
       if (req.query?.talk) return res.status(200).json({ talk: (await getTalk(String(req.query.talk))) || { thread: [] } })
       const [tasks, journal] = await Promise.all([getTasks(), getJournal(30)])
       // (what he read stays on the server — it's long; the app only needs to know whether he's written his conclusion)
@@ -24,6 +58,14 @@ export default async function handler(req, res) {
       if (req.body?.conclude) return res.status(200).json({ talk: await concludeItem(String(req.body.conclude)) })
       if (req.body?.talkId && typeof req.body.message === 'string' && req.body.message.trim()) {
         return res.status(200).json({ talk: await talkAbout(String(req.body.talkId), req.body.message.trim()) })
+      }
+
+      // Talking with him about the page you're reading in the book
+      if (req.body?.bookTalk && typeof req.body.bookTalk.message === 'string' && req.body.bookTalk.message.trim()) {
+        const book = await getBook()
+        if (!book) throw new Error('He isn’t reading a book right now.')
+        const page = bookPage(await loadBookText(book), req.body.bookTalk.pos)
+        return res.status(200).json({ thread: (await talkAboutBook(book, page, req.body.bookTalk.message.trim())).thread })
       }
 
       if (typeof addTask === 'string' && addTask.trim()) {
