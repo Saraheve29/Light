@@ -470,6 +470,7 @@ function Chat({ pass, onOpenSettings, onLock, onCall }) {
               )}
               {m.file && <div className="bubble-file">📄 {m.file}</div>}
               {m.content && <div className="bubble-text">{m.content}</div>}
+              {m.role === 'assistant' && <WholePoem pass={pass} text={m.content} setStatus={setNotice} />}
               <div className="bubble-meta">
                 <CopyButton text={m.content} />
                 {m.role === 'assistant' && (
@@ -783,6 +784,93 @@ function HearButton({ pass, text, setStatus, label = '🔊 Hear him' }) {
   return <button type="button" className="btn-ghost" onClick={hear}>{playing ? '■ Stop' : label}</button>
 }
 
+/* ---------------- From an article to the book ---------------- */
+// On an article he read: finds the free book it's about (if there is one) and opens it in "Reading with him",
+// at the chapter he mentions when he names one
+function ReadBook({ pass, at, setStatus }) {
+  const [state, setState] = useState('idle') // idle | loading | found | none
+  const [found, setFound] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  async function look() {
+    setState('loading')
+    try {
+      const d = await api('/api/work', pass, { method: 'POST', body: JSON.stringify({ bookForEntry: { at } }) })
+      setFound(d.candidate ? d : null); setState(d.candidate ? 'found' : 'none')
+    } catch (err) { setStatus(err.message); setState('idle') }
+  }
+
+  async function open() {
+    setBusy(true)
+    try {
+      await api('/api/work', pass, { method: 'POST', body: JSON.stringify({ readWith: { id: found.candidate.id } }) })
+      window.dispatchEvent(new CustomEvent('light:readbook', { detail: { pos: found.chapter ? found.chapter.pos : 0 } }))
+    } catch (err) { setStatus(err.message) } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="whole-poem">
+      {state === 'idle' && <button type="button" className="btn-ghost" onClick={look}>📚 Is there a book?</button>}
+      {state === 'loading' && <p className="muted small">Looking for the book…</p>}
+      {state === 'none' && <p className="muted small">I couldn’t match a free book to this one. Only older books that are out of copyright are free to read.</p>}
+      {state === 'found' && (
+        <div className="reader">
+          <div><b>{found.candidate.title}</b>{found.candidate.author ? ` — ${found.candidate.author}` : ''}</div>
+          {found.chapter && <p className="muted small">He mentions {found.mention}, so it will open at: {found.chapter.title}</p>}
+          <div className="reader-actions">
+            <button type="button" className="btn-primary" disabled={busy} onClick={open}>Read it with him</button>
+            <button type="button" className="btn-ghost" onClick={() => setState('idle')}>Not this one</button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ---------------- The whole poem ---------------- */
+// When he quotes a line or two of a poem, this finds the whole thing in the free poetry library
+const POEM_HINT = /\b(poem|poet|poetry|verse|sonnet|stanza|lines?|wrote|writes|rumi|rilke|dickinson|shakespeare|blake|keats|whitman|tennyson|yeats|tagore|kabir|hafiz|gibran)\b/i
+const POEM_QUOTE = /[“"‘][^”"’]{16,}[”"’]/
+function WholePoem({ pass, text, setStatus }) {
+  const [open, setOpen] = useState(false)
+  const [state, setState] = useState('idle') // idle | loading | done
+  const [poem, setPoem] = useState(null)
+  if (!text || !POEM_QUOTE.test(text) || !POEM_HINT.test(text)) return null
+
+  async function find() {
+    if (open) return setOpen(false)
+    setOpen(true)
+    if (state === 'done') return
+    setState('loading')
+    try {
+      const d = await api('/api/work', pass, { method: 'POST', body: JSON.stringify({ findPoem: { text } }) })
+      setPoem(d.poem || null); setState('done')
+    } catch (err) { setStatus?.(err.message); setOpen(false); setState('idle') }
+  }
+
+  return (
+    <div className="whole-poem">
+      <button type="button" className="btn-ghost" onClick={find}>{open ? 'Close the poem' : '📜 Whole poem'}</button>
+      {open && (
+        <div className="reader">
+          {state === 'loading' && <p className="muted">Looking for it…</p>}
+          {state === 'done' && poem && (
+            <>
+              <div><b>{poem.title}</b> — {poem.author}</div>
+              <div className="reader-text">{poem.text}</div>
+              {poem.others > 0 && <p className="muted small">Other poems have a similar line, so check this is the one he meant.</p>}
+              <HearButton pass={pass} text={`${poem.title}, by ${poem.author}.\n\n${poem.text}`} setStatus={setStatus} />
+            </>
+          )}
+          {state === 'done' && !poem && (
+            <p className="muted">I couldn’t find that one. The free poetry library only holds older poems that are out of copyright, so newer poems and many translations won’t be there.</p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 /* ---------------- Reading along with Lucian ---------------- */
 // Shows the text of a poem or passage he read (from his journal)
 function ReadIt({ pass, at, setStatus }) {
@@ -826,12 +914,28 @@ function BookReader({ pass, setStatus }) {
   const [thinking, setThinking] = useState(false)
   const [picking, setPicking] = useState(false)
   const [query, setQuery] = useState('')
+  const rootRef = useRef(null)
 
   function loadAll() {
     api('/api/work?bookInfo=1', pass).then((d) => setInfo(d.book || null)).catch((err) => { setInfo(null); setStatus(err.message) })
     api('/api/work?bookTalk=1', pass).then((d) => setThread(d.thread || [])).catch(() => {})
   }
   useEffect(() => { loadAll() }, [pass])
+
+  // "Read it with him" on one of his articles: show that book here, opened at the chapter he mentioned
+  useEffect(() => {
+    async function onOpen(e) {
+      try {
+        const d = await api('/api/work?bookInfo=1', pass)
+        setInfo(d.book || null); setThread([]); setPage(null); setPicking(false)
+        api('/api/work?bookTalk=1', pass).then((t) => setThread(t.thread || [])).catch(() => {})
+        setPage(await api(`/api/work?bookRead=${e.detail?.pos || 0}`, pass))
+        rootRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      } catch (err) { setStatus(err.message) }
+    }
+    window.addEventListener('light:readbook', onOpen)
+    return () => window.removeEventListener('light:readbook', onOpen)
+  }, [pass])
 
   async function choose(q) {
     const name = String(q || '').trim()
@@ -853,7 +957,7 @@ function BookReader({ pass, setStatus }) {
 
   async function go(pos) {
     setBusy(true)
-    try { setPage(await api(`/api/work?bookRead=${pos}`, pass)); window.scrollTo?.({ top: 0 }) }
+    try { setPage(await api(`/api/work?bookRead=${pos}`, pass)); rootRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }) }
     catch (err) { setStatus(err.message) } finally { setBusy(false) }
   }
 
@@ -873,7 +977,7 @@ function BookReader({ pass, setStatus }) {
   const where = info && !info.hers ? (info.hisChapter ? `${info.hisChapter} (about ${pct}% through)` : `part ${info.part} (about ${pct}% through)`) : ''
 
   return (
-    <>
+    <div ref={rootRef}>
       <h3 className="section-title">Reading with him 📜</h3>
       <div className="card">
         {info ? (
@@ -941,7 +1045,7 @@ function BookReader({ pass, setStatus }) {
           </div>
         )}
       </div>
-    </>
+    </div>
   )
 }
 
@@ -1034,7 +1138,9 @@ function WorkPanel({ pass, setStatus }) {
           <p className="journal-note">{j.note}</p>
           <CopyButton text={j.note} />
           <HearButton pass={pass} text={j.note} setStatus={setStatus} />
-          {(j.kind === 'poem' || j.kind === 'book') && <ReadIt pass={pass} at={j.at} setStatus={setStatus} />}
+          <WholePoem pass={pass} text={j.note} setStatus={setStatus} />
+          {(j.kind === 'wiki' || j.kind === 'web' || j.kind === 'followup') && <ReadBook pass={pass} at={j.at} setStatus={setStatus} />}
+          {j.hasRead && j.kind !== 'nasa' && <ReadIt pass={pass} at={j.at} setStatus={setStatus} />}
           <StudyTalk pass={pass} id={`j-${j.at}`} setStatus={setStatus} />
         </div>
       ))}
