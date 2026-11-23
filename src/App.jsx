@@ -812,21 +812,50 @@ function ReadIt({ pass, at, setStatus }) {
   )
 }
 
-// The book he's reading now: see where he's up to, read that part, start from the start, or jump to a chapter.
-// This only reads — it never changes where Lucian is up to in the book.
+// Reading together: the book he's in the middle of — or any free classic you choose.
+// See where he's up to, read that part, start from the start, or jump to a chapter. This never changes where Lucian is up to.
+const READ_SUGGESTIONS = ['Alice in Wonderland', 'The Prophet Gibran', 'Tao Te Ching', 'Siddhartha', 'Meditations Marcus Aurelius', 'Frankenstein']
+
 function BookReader({ pass, setStatus }) {
-  const [info, setInfo] = useState(undefined)
+  const [info, setInfo] = useState(undefined) // undefined = loading, null = no book yet
   const [page, setPage] = useState(null)
   const [busy, setBusy] = useState(false)
   const [thread, setThread] = useState([])
   const [msg, setMsg] = useState('')
   const [pending, setPending] = useState('')
   const [thinking, setThinking] = useState(false)
+  const [picking, setPicking] = useState(false)
+  const [query, setQuery] = useState('')
 
-  useEffect(() => {
-    api('/api/work?bookInfo=1', pass).then((d) => setInfo(d.book || null)).catch(() => setInfo(null))
+  function loadAll() {
+    api('/api/work?bookInfo=1', pass).then((d) => setInfo(d.book || null)).catch((err) => { setInfo(null); setStatus(err.message) })
     api('/api/work?bookTalk=1', pass).then((d) => setThread(d.thread || [])).catch(() => {})
-  }, [pass])
+  }
+  useEffect(() => { loadAll() }, [pass])
+
+  async function choose(q) {
+    const name = String(q || '').trim()
+    if (!name || busy) return
+    setBusy(true); setStatus('Finding it…')
+    try {
+      await api('/api/work', pass, { method: 'POST', body: JSON.stringify({ readWith: { query: name } }) })
+      setPage(null); setPicking(false); setQuery(''); setStatus(''); loadAll()
+    } catch (err) { setStatus(err.message) } finally { setBusy(false) }
+  }
+
+  async function backToHis() {
+    setBusy(true)
+    try {
+      await api('/api/work', pass, { method: 'POST', body: JSON.stringify({ readWith: null }) })
+      setPage(null); setPicking(false); loadAll()
+    } catch (err) { setStatus(err.message) } finally { setBusy(false) }
+  }
+
+  async function go(pos) {
+    setBusy(true)
+    try { setPage(await api(`/api/work?bookRead=${pos}`, pass)); window.scrollTo?.({ top: 0 }) }
+    catch (err) { setStatus(err.message) } finally { setBusy(false) }
+  }
 
   // Talk to him about the page you're on — he sees that page, and remembers what you've said so far
   async function send() {
@@ -839,32 +868,49 @@ function BookReader({ pass, setStatus }) {
     } catch (err) { setStatus(err.message); setMsg(text) } finally { setPending(''); setThinking(false) }
   }
 
-  async function go(pos) {
-    setBusy(true)
-    try { setPage(await api(`/api/work?bookRead=${pos}`, pass)); window.scrollTo?.({ top: 0 }) }
-    catch (err) { setStatus(err.message) } finally { setBusy(false) }
-  }
-
-  if (!info) return null
-  const pct = info.total ? Math.round((info.hisPos / info.total) * 100) : 0
-  const where = info.hisChapter ? `${info.hisChapter} (about ${pct}% through)` : `part ${info.part} (about ${pct}% through)`
+  if (info === undefined) return null
+  const pct = info ? (info.total ? Math.round((info.hisPos / info.total) * 100) : 0) : 0
+  const where = info && !info.hers ? (info.hisChapter ? `${info.hisChapter} (about ${pct}% through)` : `part ${info.part} (about ${pct}% through)`) : ''
 
   return (
     <>
       <h3 className="section-title">Reading with him 📜</h3>
       <div className="card">
-        <div className="card-text"><b>{info.title}</b>{info.author ? ` — ${info.author}` : ''}</div>
-        <p className="muted small">He’s up to: {where}</p>
-        <div className="reader-actions">
-          <button type="button" className="btn-ghost" disabled={busy} onClick={() => go(info.hisPos)}>Read where he is</button>
-          <button type="button" className="btn-ghost" disabled={busy} onClick={() => go(0)}>Start from the beginning</button>
-        </div>
-        {info.chapters.length > 0 && (
-          <select className="reader-select" value="" disabled={busy} onChange={(e) => e.target.value !== '' && go(Number(e.target.value))}>
-            <option value="">Choose another chapter…</option>
-            {info.chapters.map((c, i) => <option key={i} value={c.pos}>{c.title}</option>)}
-          </select>
+        {info ? (
+          <>
+            <div className="card-text"><b>{info.title}</b>{info.author ? ` — ${info.author}` : ''}</div>
+            {where && <p className="muted small">He’s up to: {where}</p>}
+            {info.hers && <p className="muted small">A book you chose to read together.</p>}
+            <div className="reader-actions">
+              <button type="button" className="btn-ghost" disabled={busy} onClick={() => go(info.hisPos)}>{info.hers ? 'Start reading' : 'Read where he is'}</button>
+              {!info.hers && <button type="button" className="btn-ghost" disabled={busy} onClick={() => go(0)}>Start from the beginning</button>}
+            </div>
+            {info.chapters.length > 0 && (
+              <select className="reader-select" value="" disabled={busy} onChange={(e) => e.target.value !== '' && go(Number(e.target.value))}>
+                <option value="">Choose another chapter…</option>
+                {info.chapters.map((c, i) => <option key={i} value={c.pos}>{c.title}</option>)}
+              </select>
+            )}
+          </>
+        ) : (
+          <p className="muted">He isn’t in the middle of a book right now. Pick one to read together:</p>
         )}
+
+        <div className="reader-actions">
+          <button type="button" className="btn-ghost" disabled={busy} onClick={() => setPicking((v) => !v)}>{picking ? 'Close' : info ? '📚 Choose a different book' : '📚 Choose a book'}</button>
+          {info?.hers && info.hisTitle && <button type="button" className="btn-ghost" disabled={busy} onClick={backToHis}>Back to his book</button>}
+          {info?.hers && !info.hisTitle && <button type="button" className="btn-ghost" disabled={busy} onClick={backToHis}>Stop reading this</button>}
+        </div>
+        {(picking || !info) && (
+          <div className="reader">
+            <div className="reader-actions">
+              {READ_SUGGESTIONS.map((b) => <button key={b} type="button" className="btn-ghost" disabled={busy} onClick={() => choose(b)}>{b.replace(/ (Gibran|Marcus Aurelius)$/, '')}</button>)}
+            </div>
+            <input className="reader-select" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Or type any free classic book…" />
+            <button type="button" className="btn-primary" disabled={busy || !query.trim()} onClick={() => choose(query)}>Find it</button>
+          </div>
+        )}
+
         {page && (
           <div className="reader">
             {page.chapter && <div className="muted small">{page.chapter}</div>}
