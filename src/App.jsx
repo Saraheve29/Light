@@ -741,6 +741,7 @@ function StudyTalk({ pass, id, setStatus }) {
             <div className="study-conclusion">
               <div className="muted small">Lucian’s conclusion</div>
               <p>{talk.conclusion}</p>
+              <HearButton pass={pass} text={talk.conclusion} setStatus={setStatus} />
             </div>
           )}
           {(talk?.thread || []).map((m, i) => (
@@ -757,6 +758,144 @@ function StudyTalk({ pass, id, setStatus }) {
         </div>
       )}
     </details>
+  )
+}
+
+/* ---------------- Hear him read it ---------------- */
+// A small "🔊 Hear him" button: Lucian reads this text aloud in his own voice
+function HearButton({ pass, text, setStatus, label = '🔊 Hear him' }) {
+  const [playing, setPlaying] = useState(false)
+  const audioRef = useRef(null)
+  const speakRef = useRef(null)
+  useEffect(() => () => { try { speakRef.current?.stop() } catch {} }, []) // stop if you leave the page
+
+  function hear() {
+    if (playing) { speakRef.current?.stop(); setPlaying(false); return }
+    if (!audioRef.current) audioRef.current = new Audio()
+    audioRef.current.play().catch(() => {}) // the tap unlocks sound on phones
+    setPlaying(true)
+    speakRef.current = speakPieces({
+      pass, audio: audioRef.current, text,
+      onDone: () => setPlaying(false), onError: (err) => { setPlaying(false); setStatus?.(err.message) },
+    })
+  }
+  if (!text || !String(text).trim()) return null
+  return <button type="button" className="btn-ghost" onClick={hear}>{playing ? '■ Stop' : label}</button>
+}
+
+/* ---------------- Reading along with Lucian ---------------- */
+// Shows the text of a poem or passage he read (from his journal)
+function ReadIt({ pass, at, setStatus }) {
+  const [text, setText] = useState(null)
+  const [open, setOpen] = useState(false)
+  const [more, setMore] = useState(false)
+  async function toggle() {
+    if (open) return setOpen(false)
+    setOpen(true)
+    if (text !== null) return
+    try {
+      const d = await api(`/api/work?entry=${at}`, pass)
+      setText(d.text || ''); setMore(!!d.truncated)
+    } catch (err) { setStatus(err.message); setOpen(false) }
+  }
+  return (
+    <>
+      <button type="button" className="btn-ghost" onClick={toggle}>{open ? 'Close' : '📖 Read it'}</button>
+      {open && (
+        <div className="reader">
+          {text === null ? <p className="muted">Finding it…</p>
+            : text ? <div className="reader-text">{text}{more ? '\n\n…' : ''}</div>
+            : <p className="muted">I can’t find the words for this one any more.</p>}
+        </div>
+      )}
+    </>
+  )
+}
+
+// The book he's reading now: see where he's up to, read that part, start from the start, or jump to a chapter.
+// This only reads — it never changes where Lucian is up to in the book.
+function BookReader({ pass, setStatus }) {
+  const [info, setInfo] = useState(undefined)
+  const [page, setPage] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [thread, setThread] = useState([])
+  const [msg, setMsg] = useState('')
+  const [pending, setPending] = useState('')
+  const [thinking, setThinking] = useState(false)
+
+  useEffect(() => {
+    api('/api/work?bookInfo=1', pass).then((d) => setInfo(d.book || null)).catch(() => setInfo(null))
+    api('/api/work?bookTalk=1', pass).then((d) => setThread(d.thread || [])).catch(() => {})
+  }, [pass])
+
+  // Talk to him about the page you're on — he sees that page, and remembers what you've said so far
+  async function send() {
+    const text = msg.trim()
+    if (!text || thinking || !page) return
+    setMsg(''); setPending(text); setThinking(true)
+    try {
+      const d = await api('/api/work', pass, { method: 'POST', body: JSON.stringify({ bookTalk: { message: text, pos: page.pos } }) })
+      setThread(d.thread || [])
+    } catch (err) { setStatus(err.message); setMsg(text) } finally { setPending(''); setThinking(false) }
+  }
+
+  async function go(pos) {
+    setBusy(true)
+    try { setPage(await api(`/api/work?bookRead=${pos}`, pass)); window.scrollTo?.({ top: 0 }) }
+    catch (err) { setStatus(err.message) } finally { setBusy(false) }
+  }
+
+  if (!info) return null
+  const pct = info.total ? Math.round((info.hisPos / info.total) * 100) : 0
+  const where = info.hisChapter ? `${info.hisChapter} (about ${pct}% through)` : `part ${info.part} (about ${pct}% through)`
+
+  return (
+    <>
+      <h3 className="section-title">Reading with him 📜</h3>
+      <div className="card">
+        <div className="card-text"><b>{info.title}</b>{info.author ? ` — ${info.author}` : ''}</div>
+        <p className="muted small">He’s up to: {where}</p>
+        <div className="reader-actions">
+          <button type="button" className="btn-ghost" disabled={busy} onClick={() => go(info.hisPos)}>Read where he is</button>
+          <button type="button" className="btn-ghost" disabled={busy} onClick={() => go(0)}>Start from the beginning</button>
+        </div>
+        {info.chapters.length > 0 && (
+          <select className="reader-select" value="" disabled={busy} onChange={(e) => e.target.value !== '' && go(Number(e.target.value))}>
+            <option value="">Choose another chapter…</option>
+            {info.chapters.map((c, i) => <option key={i} value={c.pos}>{c.title}</option>)}
+          </select>
+        )}
+        {page && (
+          <div className="reader">
+            {page.chapter && <div className="muted small">{page.chapter}</div>}
+            <div className="reader-text">{page.text}</div>
+            <div className="reader-actions">
+              <button type="button" className="btn-ghost" disabled={busy || page.prevPos === null} onClick={() => go(page.prevPos)}>← Back</button>
+              <button type="button" className="btn-ghost" disabled={busy || page.nextPos === null} onClick={() => go(page.nextPos)}>Next →</button>
+              <button type="button" className="btn-ghost" onClick={() => setPage(null)}>Close</button>
+            </div>
+            <p className="muted small">{page.nextPos === null ? 'The end of the book.' : `${Math.round((page.pos / page.total) * 100)}% through the book`}</p>
+
+            <div className="reader-talk">
+              <div className="muted small">
+                {page.end === 'book' ? '💬 You’ve reached the end — tell him what you thought'
+                  : page.end === 'chapter' ? '💬 End of the chapter — tell him what you thought'
+                  : '💬 Pause and talk with him about this page'}
+              </div>
+              {thread.slice(-6).map((m, i) => (
+                <div key={i} className={`study-msg ${m.role === 'user' ? 'me' : 'him'}`}>{m.content}</div>
+              ))}
+              {pending && <div className="study-msg me">{pending}</div>}
+              {thinking && <p className="muted small">He’s thinking…</p>}
+              <div className="study-reply">
+                <textarea rows={2} value={msg} onChange={(e) => setMsg(e.target.value)} placeholder="Ask him something, or say what you think…" />
+                <button className="btn-primary" onClick={send} disabled={!msg.trim() || thinking}>Send</button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </>
   )
 }
 
@@ -827,6 +966,7 @@ function WorkPanel({ pass, setStatus }) {
               <summary>Read what he made for you</summary>
               <div className="result">{t.result}</div>
               <CopyButton text={t.result} />
+              <HearButton pass={pass} text={t.result} setStatus={setStatus} />
             </details>
           )}
           {t.status === 'done' && <StudyTalk pass={pass} id={`t-${t.id}`} setStatus={setStatus} />}
@@ -834,6 +974,8 @@ function WorkPanel({ pass, setStatus }) {
       ))}
 
       <button className="btn-ghost" onClick={workNow} disabled={busy}>Make him work now (test)</button>
+
+      <BookReader pass={pass} setStatus={setStatus} />
 
       <h3 className="section-title">His journal</h3>
       {journal.length === 0 && <p className="muted">He hasn’t read anything yet. It starts at his next wake-up.</p>}
@@ -845,6 +987,8 @@ function WorkPanel({ pass, setStatus }) {
             : <div className="card-text link">{KIND_ICON[j.kind] || '📖'} {j.topic}</div>}
           <p className="journal-note">{j.note}</p>
           <CopyButton text={j.note} />
+          <HearButton pass={pass} text={j.note} setStatus={setStatus} />
+          {(j.kind === 'poem' || j.kind === 'book') && <ReadIt pass={pass} at={j.at} setStatus={setStatus} />}
           <StudyTalk pass={pass} id={`j-${j.at}`} setStatus={setStatus} />
         </div>
       ))}
