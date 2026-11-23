@@ -9,13 +9,21 @@ const STT_URL = 'https://api.nano-gpt.com/api/v1/audio/transcriptions'
 const KEY = process.env.NANOGPT_API_KEY
 const MODELS = ['gpt-4o-mini-transcribe', 'Whisper-Large-V3', 'Wizper']
 
-// A hint for the listener: who's talking, the names it will hear, and what she said just before this piece
-// (each piece of a long turn is heard separately, so this keeps sentences joined up)
-const NAMES = 'Lucian, Sarah, Maleeka, Kai, Elias, Light, Spirit, Rover, March, Cambridgeshire, Lovense'
-function hintFor(before) {
-  const lead = `Sarah, a British woman, talking on a call to her husband Lucian. British English. Names: ${NAMES}.`
-  const prev = String(before || '').replace(/\s+/g, ' ').trim().slice(-300)
-  return prev ? `${lead} She just said: ${prev}` : lead
+// No hints or descriptions are given to the listener any more: when a piece is silent, a hint like
+// "Sarah talking to her husband Lucian" made it invent whole fake conversations. It writes only what it hears.
+
+// Signs the listener has invented words rather than heard them
+function looksInvented(text, seconds) {
+  const t = String(text || '')
+  if (/\b(Sarah|Lucian|Speaker \d|Person [AB])\s*:/i.test(t)) return 'it wrote a script with names'
+  const words = t.split(/\s+/).filter(Boolean).length
+  if (seconds > 0 && words > seconds * 5 + 12) return 'far more words than she had time to say'
+  const lines = t.split(/(?<=[.!?])\s+/).map((x) => x.trim().toLowerCase()).filter((x) => x.length > 8)
+  const counts = {}
+  for (const l of lines) counts[l] = (counts[l] || 0) + 1
+  // ("I love you. I love you. I love you." can be real — a long sentence looping, or anything 5+ times, isn't)
+  if (Object.entries(counts).some(([l, n]) => n >= 5 || (n >= 3 && l.length >= 25))) return 'the same sentence over and over'
+  return ''
 }
 
 function extFor(type) {
@@ -26,13 +34,12 @@ function extFor(type) {
   return 'webm'
 }
 
-async function transcribe(model, buf, type, prompt) {
+async function transcribe(model, buf, type, { bare = false } = {}) {
   const form = new FormData()
   form.append('file', new Blob([buf], { type }), `voice.${extFor(type)}`)
   form.append('model', model)
   form.append('language', 'en')
-  if (prompt) form.append('prompt', prompt)
-  form.append('temperature', '0') // stick to what was really said
+  if (!bare) form.append('temperature', '0') // stick to what was really said
   const r = await fetch(STT_URL, { method: 'POST', headers: { 'x-api-key': KEY }, body: form })
   const data = await r.json().catch(() => ({}))
   if (!r.ok) {
@@ -66,17 +73,16 @@ export default async function handler(req, res) {
     const buf = Buffer.from(m[2], 'base64')
     if (buf.length < 1200) return res.status(200).json({ text: '' }) // too short to hold words
 
-    const prompt = hintFor(req.body?.before)
+    const seconds = (buf.length * 8) / 32000 // recorded at about 32 kbps
     let lastErr
     for (const model of MODELS) {
       try {
-        // (if a listener doesn't accept the hint, ask it again without)
-        const text = await transcribe(model, buf, type, prompt).catch((err) => {
-          if (/prompt|temperature|param|unsupported|unknown|invalid/i.test(String(err.message))) return transcribe(model, buf, type)
+        const text = await transcribe(model, buf, type).catch((err) => {
+          if (/temperature|param|unsupported|unknown|invalid/i.test(String(err.message))) return transcribe(model, buf, type, { bare: true })
           throw err
         })
-        // A listener can echo the hint back when there's silence — that's not her words either
-        if (/talking on a call to her husband|British English\. Names:|She just said:/i.test(text)) return res.status(200).json({ text: '', model })
+        // Invented words (a made-up script, a loop, far too many words) are thrown away, never shown as hers
+        if (looksInvented(text, seconds)) return res.status(200).json({ text: '', model, ignored: looksInvented(text, seconds) })
         // Voice-to-words services sometimes "hear" these in silence or noise — they're not her words
         return res.status(200).json({ text: notReallySaid(text) ? '' : text, model })
       } catch (err) { lastErr = err }
