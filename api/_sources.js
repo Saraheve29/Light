@@ -125,7 +125,90 @@ export async function getReadWith() { const b = await getJSON(READWITH, null); r
 export async function saveReadWith(book) { return book ? setJSON(READWITH, book) : redis('DEL', READWITH) }
 export async function saveBook(book) { return book ? setJSON(KEYS.book, book) : redis('DEL', KEYS.book) }
 
+// ---------- From an article to the book it's about ----------
+const STOP = new Set(['the', 'and', 'for', 'with', 'from', 'about', 'book', 'books', 'novel', 'poem', 'film', 'text', 'texts', 'gospel'])
+const plainTextUrl = (f = {}) => { const u = f['text/plain; charset=utf-8'] || f['text/plain; charset=us-ascii'] || f['text/plain']; return u && !u.endsWith('.zip') ? u : '' }
+const asBook = (b, url) => ({ id: b.id, title: b.title, author: b.authors?.[0]?.name || '', url, pos: 0, part: 0 })
+
+export async function bookById(id) {
+  const b = await getJSONFrom(`https://gutendex.com/books/${Number(id)}`)
+  const url = plainTextUrl(b.formats)
+  return url ? asBook(b, url) : null
+}
+
+// Does this free book plausibly match an article's title? (most of the title's words must appear in the book's title / author)
+export function bookMatches(topic, b) {
+  const words = String(topic || '').replace(/\([^)]*\)/g, ' ').toLowerCase().split(/[^a-z0-9']+/).filter((w) => w.length > 2 && !STOP.has(w))
+  if (!words.length) return false
+  const hay = `${b.title || ''} ${(b.authors || []).map((a) => a.name).join(' ')}`.toLowerCase()
+  return words.filter((w) => hay.includes(w)).length / words.length >= 0.75
+}
+
+export async function findBookMatch(topic) {
+  const clean = String(topic || '').replace(/\([^)]*\)/g, ' ').replace(/[“”"]/g, '').replace(/\s+/g, ' ').trim()
+  if (!clean) return null
+  const d = await getJSONFrom(`https://gutendex.com/books?search=${encodeURIComponent(clean)}`)
+  for (const b of d.results || []) {
+    const url = plainTextUrl(b.formats)
+    if (url && bookMatches(clean, b)) return asBook(b, url)
+  }
+  return null
+}
+
+// "…in Chapter 5…" → which chapter of the book is he talking about?
+const NUMWORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20, first: 1, second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6, seventh: 7, eighth: 8, ninth: 9, tenth: 10 }
+function toNumber(tok) {
+  const t = String(tok).toLowerCase()
+  if (/^\d+$/.test(t)) return Number(t)
+  if (NUMWORDS[t]) return NUMWORDS[t]
+  if (/^[ivxlcdm]+$/.test(t)) {
+    const v = { i: 1, v: 5, x: 10, l: 50, c: 100, d: 500, m: 1000 }
+    let n = 0
+    for (let i = 0; i < t.length; i++) { const a = v[t[i]], b = v[t[i + 1]] || 0; n += a < b ? -a : a }
+    return n
+  }
+  return 0
+}
+const MENTION = /\b(chapter|book|part|canto|stave|act|letter|volume)\s+(\d{1,3}|[ivxlcdm]{1,7}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\b/i
+export function chapterMention(text) {
+  const m = MENTION.exec(String(text || ''))
+  return m && toNumber(m[2]) ? { kind: m[1].toLowerCase(), n: toNumber(m[2]), label: `${m[1][0].toUpperCase()}${m[1].slice(1).toLowerCase()} ${m[2]}` } : null
+}
+export function matchChapter(chapters, mention) {
+  if (!mention) return null
+  return chapters.find((c) => { const m = MENTION.exec(c.title); return m && m[1].toLowerCase() === mention.kind && toNumber(m[2]) === mention.n }) || null
+}
+
 // ---------- Poems (PoetryDB) ----------
+// Finds the WHOLE poem when a line or two of it has been quoted (searches the free PoetryDB library by line).
+// Pulls the quoted bits out of a message, longest first, and tries each — never writes a poem from memory.
+export function quotedBits(text) {
+  const out = []
+  const re = /[“"‘]([^”"’\n]{0,400}(?:\n[^”"’\n]{0,400}){0,5})[”"’]/g
+  let m
+  while ((m = re.exec(String(text || '')))) {
+    for (const part of m[1].split(/\s*(?:\/|\n)\s*/)) {
+      const t = part.replace(/[’‘]/g, "'").replace(/[“”]/g, '"').replace(/[.,;:!?…—–-]+$/g, '').replace(/^[.,;:!?…—–-]+/g, '').trim()
+      if (t.split(/\s+/).length >= 4 && t.length >= 16) out.push(t)
+    }
+  }
+  return [...new Set(out)].sort((a, b) => b.length - a.length).slice(0, 4)
+}
+
+export async function findPoemByLines(text) {
+  for (const bit of quotedBits(text)) {
+    const tries = [bit, bit.split(/\s+/).slice(0, 7).join(' ')]
+    for (const phrase of [...new Set(tries)]) {
+      try {
+        const d = await getJSONFrom(`https://poetrydb.org/lines/${encodeURIComponent(phrase)}`)
+        const p = Array.isArray(d) ? d[0] : null
+        if (p?.lines?.length) return { title: p.title, author: p.author, text: p.lines.join('\n'), matched: phrase, others: Math.max(0, d.length - 1) }
+      } catch {}
+    }
+  }
+  return null
+}
+
 export async function randomPoem() {
   const d = await getJSONFrom('https://poetrydb.org/random/1')
   const p = Array.isArray(d) ? d[0] : null
