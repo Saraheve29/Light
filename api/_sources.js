@@ -119,6 +119,10 @@ export function bookPage(text, wanted, chapters = findChapters(text)) {
 }
 
 export async function getBook() { const b = await getJSON(KEYS.book, null); return b?.title ? b : null } // (only a real book — never stray settings)
+// A book Sarah picked herself to read together (used instead of his book until she goes back to his)
+const READWITH = 'light:readwith'
+export async function getReadWith() { const b = await getJSON(READWITH, null); return b?.title && b?.url ? b : null }
+export async function saveReadWith(book) { return book ? setJSON(READWITH, book) : redis('DEL', READWITH) }
 export async function saveBook(book) { return book ? setJSON(KEYS.book, book) : redis('DEL', KEYS.book) }
 
 // ---------- Poems (PoetryDB) ----------
