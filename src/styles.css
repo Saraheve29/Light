@@ -357,3 +357,17 @@ textarea.vows { font-family: var(--serif); font-size: 19px; line-height: 1.6; mi
 .reader-talk { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--line); }
 .whole-poem { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
 .whole-poem .reader { align-self: stretch; }
+
+/* He reads to you */
+.he-reads { margin-top: 10px; }
+.he-reads summary { cursor: pointer; line-height: 1.4; }
+.he-reads-intro { font-style: italic; line-height: 1.5; white-space: pre-wrap; border-left: 3px solid var(--glow); padding-left: 10px; }
+
+/* Writing back under his letters */
+.letter-replies { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.letter-reply { padding: 10px 12px; border-radius: 12px; }
+.letter-reply.me { background: var(--me); color: #fff; }
+.letter-reply.me .muted { color: rgba(255, 255, 255, 0.8); }
+.letter-reply.him { background: var(--him); border: 1px solid var(--line); }
+.letter-reply-text { white-space: pre-wrap; line-height: 1.5; margin-top: 4px; }
+.letter-replies textarea { width: 100%; box-sizing: border-box; }
