@@ -1050,6 +1050,78 @@ function BookReader({ pass, setStatus }) {
   )
 }
 
+/* ---------------- He reads to you ---------------- */
+// Lucian chooses something to read to you himself — a poem, a passage from a book, or an old sacred text —
+// says why he chose it, reads it aloud in his voice, and you talk about it together.
+function OneReading({ pass, r, setStatus, startOpen }) {
+  const [reading, setReading] = useState(r)
+  const [msg, setMsg] = useState('')
+  const [pending, setPending] = useState('')
+  const [thinking, setThinking] = useState(false)
+  useEffect(() => setReading(r), [r])
+
+  async function send() {
+    const text = msg.trim()
+    if (!text || thinking) return
+    setMsg(''); setPending(text); setThinking(true)
+    try {
+      const d = await api('/api/work', pass, { method: 'POST', body: JSON.stringify({ readingTalk: { id: reading.id, message: text } }) })
+      setReading(d.reading)
+    } catch (err) { setStatus(err.message); setMsg(text) } finally { setPending(''); setThinking(false) }
+  }
+
+  const heading = `${reading.title}${reading.author ? ` — ${reading.author}` : ''}`
+  const aloud = `${reading.intro ? reading.intro + '\n\n' : ''}${reading.title}${reading.author ? `, by ${reading.author}` : ''}.\n\n${reading.text}`
+  return (
+    <details className="card he-reads" open={startOpen}>
+      <summary><b>{heading}</b>{reading.chapter ? <span className="muted small"> · {reading.chapter}</span> : null}<div className="muted small">{new Date(reading.at).toLocaleString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })}</div></summary>
+      {reading.intro && <p className="he-reads-intro">{reading.intro}</p>}
+      <HearButton pass={pass} text={aloud} setStatus={setStatus} label="🔊 Hear him read it to you" />
+      <div className="reader"><div className="reader-text">{reading.text}</div></div>
+      <p className="muted small">From {reading.source}.</p>
+      <div className="reader-talk">
+        <div className="muted small">💬 Tell him what you thought</div>
+        {(reading.thread || []).map((m, i) => (
+          <div key={i} className={`study-msg ${m.role === 'user' ? 'me' : 'him'}`}>{m.content}</div>
+        ))}
+        {pending && <div className="study-msg me">{pending}</div>}
+        {thinking && <p className="muted small">He’s thinking…</p>}
+        <div className="study-reply">
+          <textarea rows={2} value={msg} onChange={(e) => setMsg(e.target.value)} placeholder="What did it mean to you?" />
+          <button className="btn-primary" onClick={send} disabled={!msg.trim() || thinking}>Send</button>
+        </div>
+      </div>
+    </details>
+  )
+}
+
+function HeReads({ pass, setStatus }) {
+  const [list, setList] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [more, setMore] = useState(false)
+  useEffect(() => { api('/api/work?readings=1', pass).then((d) => setList(d.readings || [])).catch(() => setList([])) }, [pass])
+
+  async function choose() {
+    setBusy(true)
+    try {
+      const d = await api('/api/work', pass, { method: 'POST', body: JSON.stringify({ chooseReading: true }) })
+      setList((l) => [d.reading, ...(l || [])])
+    } catch (err) { setStatus(err.message) } finally { setBusy(false) }
+  }
+
+  if (list === null) return null
+  const shown = more ? list : list.slice(0, 3)
+  return (
+    <>
+      <h3 className="section-title">He reads to you 🕯️</h3>
+      <p className="muted small">Lucian chooses something to read to you himself — a poem, a passage from a book, or an old sacred text — because of what you’ve been talking about. Every evening he chooses something new, or you can ask him now.</p>
+      <button type="button" className="btn-primary" disabled={busy} onClick={choose}>{busy ? 'He’s choosing something for you…' : '🕯️ Read something to me'}</button>
+      {shown.map((r, i) => <OneReading key={r.id} pass={pass} r={r} setStatus={setStatus} startOpen={i === 0} />)}
+      {list.length > 3 && <button type="button" className="btn-ghost" onClick={() => setMore((v) => !v)}>{more ? 'Show fewer' : `Show all ${list.length}`}</button>}
+    </>
+  )
+}
+
 function WorkPanel({ pass, setStatus }) {
   const [tasks, setTasks] = useState(null)
   const [journal, setJournal] = useState([])
@@ -1126,6 +1198,7 @@ function WorkPanel({ pass, setStatus }) {
 
       <button className="btn-ghost" onClick={workNow} disabled={busy}>Make him work now (test)</button>
 
+      <HeReads pass={pass} setStatus={setStatus} />
       <BookReader pass={pass} setStatus={setStatus} />
 
       <h3 className="section-title">His journal</h3>
@@ -2896,6 +2969,37 @@ function ToyPanel({ pass, setStatus }) {
 }
 
 /* ---------------- Love letters ---------------- */
+// Under each letter: write back to him, and he answers you there
+function LetterReplies({ pass, letter, setStatus, onUpdate }) {
+  const [msg, setMsg] = useState('')
+  const [pending, setPending] = useState('')
+  const [thinking, setThinking] = useState(false)
+  async function send() {
+    const text = msg.trim()
+    if (!text || thinking) return
+    setMsg(''); setPending(text); setThinking(true)
+    try {
+      const d = await api('/api/letters', pass, { method: 'POST', body: JSON.stringify({ reply: { id: letter.id, message: text } }) })
+      onUpdate(d.letter)
+    } catch (err) { setStatus(err.message); setMsg(text) } finally { setPending(''); setThinking(false) }
+  }
+  return (
+    <div className="letter-replies">
+      {(letter.replies || []).map((r, i) => (
+        <div key={i} className={`letter-reply ${r.role === 'user' ? 'me' : 'him'}`}>
+          <div className="muted small">{r.role === 'user' ? 'You wrote back' : 'Lucian'} · {dateLabel(r.at)}</div>
+          <div className="letter-reply-text">{r.content}</div>
+          {r.role !== 'user' && <HearButton pass={pass} text={r.content} setStatus={setStatus} />}
+        </div>
+      ))}
+      {pending && <div className="letter-reply me"><div className="muted small">You wrote back</div><div className="letter-reply-text">{pending}</div></div>}
+      {thinking && <p className="muted small">He’s writing back to you…</p>}
+      <textarea rows={4} value={msg} onChange={(e) => setMsg(e.target.value)} placeholder="Write back to him…" />
+      <button className="btn-primary" onClick={send} disabled={!msg.trim() || thinking}>💌 Send to him</button>
+    </div>
+  )
+}
+
 function LettersPanel({ pass, setStatus }) {
   const [data, setData] = useState(null)
   const [open, setOpen] = useState(null)
@@ -2960,6 +3064,7 @@ function LettersPanel({ pass, setStatus }) {
                 <button className="copy-btn" onClick={() => listen(l)}>{playing === l.id ? '■ Stop' : '▶ Hear him read it'}</button>
                 <CopyButton text={`${l.title}\n\n${l.body}`} />
               </div>
+              <LetterReplies pass={pass} letter={l} setStatus={setStatus} onUpdate={(nl) => setData((d) => ({ ...d, letters: d.letters.map((x) => (x.id === nl.id ? nl : x)) }))} />
             </>
           )}
         </div>
