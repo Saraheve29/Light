@@ -4,6 +4,7 @@ import {
 } from './_lib.js'
 import { sendToAll } from './_push.js'
 import { doWork, workContext, markTold } from './_work.js'
+import { readingTick } from './_reading.js'
 import { giftTick } from './_gifts.js'
 import { letterTick } from './_letters.js'
 import { cardTick } from './_print.js'
@@ -59,6 +60,7 @@ export default async function handler(req, res) {
       try { await makeCallProfile() } catch { /* try again next hour */ }
       try { await chapterTick() } catch { /* try again next hour */ }
       try { await bookTick() } catch { /* try again next hour */ }
+      try { await readingTick() } catch { /* try again next hour */ } // in the evening he chooses something to read to her
       try {
         // Once a day he looks back through the photos you sent and keeps any special ones for your book — and tells you
         const tell = settings.enabled ? async (reason, extra) => { await redis('SET', KEYS.lastProactive, String(Date.now())); await sendText(reason, extra, { preview: settings.preview }) } : null
