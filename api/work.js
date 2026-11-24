@@ -1,6 +1,7 @@
 import { checkAuth } from './_lib.js'
 import { getTasks, saveTasks, getJournal, doWork, getTalk, concludeItem, talkAbout, getBookTalk, talkAboutBook } from './_work.js'
 import { redis, KEYS } from './_lib.js'
+import { getReadings, chooseReading, talkAboutReading } from './_reading.js'
 import { getBook, getReadWith, saveReadWith, findBook, bookById, findBookMatch, chapterMention, matchChapter, findPoemByLines, loadBookText, findChapters, bookPage, CHUNK } from './_sources.js'
 
 // The book you're reading together: one you picked, otherwise the one he's in the middle of
@@ -53,6 +54,8 @@ export default async function handler(req, res) {
         if (!book) return res.status(200).json({ thread: [] })
         return res.status(200).json({ thread: (await getBookTalk(book)).thread || [] })
       }
+      // He reads to you: the things he chose to read to Sarah (newest first)
+      if (req.query?.readings) return res.status(200).json({ readings: [...(await getReadings())].reverse() })
       if (req.query?.talk) return res.status(200).json({ talk: (await getTalk(String(req.query.talk))) || { thread: [] } })
       const [tasks, journal] = await Promise.all([getTasks(), getJournal(30)])
       // (what he read stays on the server — it's long; the app only needs to know whether he's written his conclusion)
@@ -64,6 +67,11 @@ export default async function handler(req, res) {
       const { addTask, deleteTask, clearJournal, runNow } = req.body || {}
 
       // His conclusion on one study, and talking with him about it
+      // He reads to you: ask him to choose something now, or talk with him about one he read
+      if (req.body?.chooseReading) return res.status(200).json({ reading: await chooseReading() })
+      if (req.body?.readingTalk && typeof req.body.readingTalk.message === 'string' && req.body.readingTalk.message.trim()) {
+        return res.status(200).json({ reading: await talkAboutReading(String(req.body.readingTalk.id), req.body.readingTalk.message.trim()) })
+      }
       if (req.body?.conclude) return res.status(200).json({ talk: await concludeItem(String(req.body.conclude)) })
       if (req.body?.talkId && typeof req.body.message === 'string' && req.body.message.trim()) {
         return res.status(200).json({ talk: await talkAbout(String(req.body.talkId), req.body.message.trim()) })
