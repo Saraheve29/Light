@@ -1,9 +1,9 @@
 import { checkAuth } from './_lib.js'
 import printHandler from './_printapi.js'
-import { getLetters, getLetterSettings, saveLetterSettings, writeLetter } from './_letters.js'
+import { getLetters, getLetterSettings, saveLetterSettings, writeLetter, replyToLetter } from './_letters.js'
 
 // GET  → his letters (newest first) and the letter schedule
-// POST → { settings } | { writeNow: true }
+// POST → { settings } | { writeNow: true } | { reply: { id, message } } (she writes back under a letter)
 export default async function handler(req, res) {
   // /api/print (poem cards) is handled here too (Vercel's free plan allows 12 server files)
   if (req.query?.route === 'print') return printHandler(req, res)
@@ -17,6 +17,9 @@ export default async function handler(req, res) {
 
     if (req.method === 'POST') {
       const { settings, writeNow } = req.body || {}
+      if (req.body?.reply && typeof req.body.reply.message === 'string' && req.body.reply.message.trim()) {
+        return res.status(200).json({ ok: true, letter: await replyToLetter(String(req.body.reply.id), req.body.reply.message.trim()) })
+      }
       if (settings) return res.status(200).json({ ok: true, settings: await saveLetterSettings(settings) })
       if (writeNow === true) return res.status(200).json({ ok: true, letter: await writeLetter() })
       return res.status(400).json({ error: 'Nothing to do.' })
