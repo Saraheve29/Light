@@ -61,46 +61,106 @@ function words(s) {
   return [...new Set(String(s || '').toLowerCase().replace(/[’']/g, '').match(/[a-z0-9]{3,}/g) || [])].filter((w) => !STOP.has(w))
 }
 
+// The search runs INSIDE the database (a small Lua script), so only the matching messages travel back —
+// downloading the whole chat for every reply used up the database's monthly allowance.
+// For each saved message containing any of her words, it sends back: position, which words matched, time, hers or his, length.
+const SEARCH_SCRIPT = `
+local len = redis.call('LLEN', KEYS[1])
+local older = tonumber(ARGV[1])
+local out = {}
+local step = 500
+for s = 0, len - 1, step do
+  local items = redis.call('LRANGE', KEYS[1], s, math.min(len - 1, s + step - 1))
+  for i, it in ipairs(items) do
+    local at = tonumber(string.match(it, '"at":(%d+)')) or 0
+    if older == 0 or at < older then
+      local low = string.lower(it)
+      local mask = 0
+      local bit = 1
+      for k = 2, #ARGV do
+        if string.find(low, '%f[%w]' .. ARGV[k] .. '%f[%W]') then mask = mask + bit end
+        bit = bit * 2
+      end
+      if mask > 0 then
+        local user = 0
+        if string.find(it, '"role":"user"', 1, true) then user = 1 end
+        table.insert(out, s + i - 1)
+        table.insert(out, mask)
+        table.insert(out, at)
+        table.insert(out, user)
+        table.insert(out, string.len(it))
+      end
+    end
+  end
+end
+return out`
+
+async function searchInDatabase(want, olderThan) {
+  const flat = await redis('EVAL', SEARCH_SCRIPT, '1', KEYS.history, String(olderThan || 0), ...want)
+  const hits = []
+  for (let k = 0; k + 4 < (flat || []).length + 1; k += 5) {
+    hits.push({ i: Number(flat[k]), mask: Number(flat[k + 1]), at: Number(flat[k + 2]), user: Number(flat[k + 3]) === 1, len: Number(flat[k + 4]) })
+  }
+  const total = Number(await redis('LLEN', KEYS.history)) || 0
+  return { hits, total }
+}
+
 // Finds older messages (outside what he's already reading) that match what she's talking about now.
 export async function recall(message, olderThan, { maxChars = 14000, maxHits = 6 } = {}) {
-  const want = words(message)
+  const want = words(message).slice(0, 30)
   if (!want.length) return ''
-  const all = await readAll()
-  const pool = all.map((m, i) => ({ m, i })).filter(({ m }) => !olderThan || (m.at || 0) < olderThan)
-  if (!pool.length) return ''
+  let hits, total
+  try {
+    ({ hits, total } = await searchInDatabase(want, olderThan))
+  } catch {
+    // (if the database can't run the search, look through only the most recent stretch, never the whole chat)
+    const recent = parseAll(await redis('LRANGE', KEYS.history, -1500, -1))
+    const base = Math.max(0, (Number(await redis('LLEN', KEYS.history)) || recent.length) - recent.length)
+    total = recent.length
+    hits = recent.map((m, n) => {
+      if (olderThan && (m.at || 0) >= olderThan) return null
+      const has = new Set(words(text(m)))
+      let mask = 0
+      want.forEach((w, b) => { if (has.has(w)) mask += 2 ** b })
+      return mask ? { i: base + n, mask, at: m.at || 0, user: m.role === 'user', len: text(m).length } : null
+    }).filter(Boolean)
+  }
+  if (!hits.length) return ''
 
   // rarer words count for more
-  const docs = pool.map(({ m }) => new Set(words(text(m))))
-  const df = Object.fromEntries(want.map((w) => [w, docs.filter((d) => d.has(w)).length]))
+  const df = want.map((_, b) => hits.filter((h) => Math.floor(h.mask / 2 ** b) % 2 === 1).length)
   const lower = String(message).toLowerCase()
   const wantsToday = /\b(today|this morning|this afternoon|earlier)\b/.test(lower)
   const wantsYesterday = /\byesterday\b/.test(lower)
   const todayKey = keyOf(Date.now()); const yestKey = keyOf(Date.now() - 86400000)
+  const pool = Math.max(total, hits.length)
 
-  const scored = pool.map(({ m, i }, n) => {
+  const top = hits.map((h) => {
     let score = 0
-    for (const w of want) if (docs[n].has(w) && df[w]) score += Math.log(1 + pool.length / df[w])
+    want.forEach((_, b) => { if (Math.floor(h.mask / 2 ** b) % 2 === 1 && df[b]) score += Math.log(1 + pool / df[b]) })
     if (!score) return null
-    const k = keyOf(m.at || 0)
+    const k = keyOf(h.at || 0)
     if (wantsToday && k === todayKey) score *= 1.6
     if (wantsYesterday && k === yestKey) score *= 1.6
-    if (m.role === 'user') score *= 1.15
-    if (text(m).length > 400) score *= 1.1 // pasted things
-    return { m, i, score }
+    if (h.user) score *= 1.15
+    if (h.len > 600) score *= 1.1 // pasted things
+    return { ...h, score }
   }).filter(Boolean).sort((a, b) => b.score - a.score).slice(0, maxHits)
-  if (!scored.length) return ''
+  if (!top.length) return ''
 
+  // Fetch just those messages (and the reply that followed each)
+  const got = await Promise.all(top.map((h) => redis('LRANGE', KEYS.history, h.i, h.i + 1).then(parseAll).catch(() => [])))
+  const scored = top.map((h, n) => ({ m: got[n][0], next: got[n][1], i: h.i })).filter((x) => x.m)
   scored.sort((a, b) => a.i - b.i) // back in time order
   let used = 0
   const parts = []
-  for (const { m, i } of scored) {
+  for (const { m, next } of scored) {
     const who = m.role === 'user' ? 'Sarah' : 'You'
     let t = text(m)
     const room = Math.max(600, Math.floor(maxChars / scored.length))
     if (t.length > room) t = t.slice(0, room) + ' …'
     let part = `[${whenText(m.at)}] ${who}: ${t}`
     // include the reply that followed, so he remembers how he answered
-    const next = all[i + 1]
     if (m.role === 'user' && next?.role === 'assistant') part += `\n  You replied: ${text(next).slice(0, 500)}${text(next).length > 500 ? ' …' : ''}`
     if (used + part.length > maxChars) break
     used += part.length
@@ -127,10 +187,12 @@ export function diaryText(diary, days = 30, maxChars = 18000) {
 
 // Hourly: write the diary for any recent day that finished without one.
 export async function diaryTick() {
+  const today = keyOf(Date.now())
+  // (once yesterday's diary is written, there's nothing to do until tomorrow — no need to re-read the chat every hour)
+  if ((await redis('GET', 'light:diarychecked')) === today) return { diary: 'already up to date today' }
   const diary = await getDiary()
   const have = new Set(diary.map((d) => d.key))
   const all = parseAll(await redis('LRANGE', KEYS.history, -2500, -1))
-  const today = keyOf(Date.now())
   const byDay = {}
   for (const m of all) {
     if (!m.at) continue
@@ -155,7 +217,7 @@ export async function diaryTick() {
   for (const d of diary) if (d.her === undefined && allByDay[d.key] && (all.length < 2500 || d.key !== keyOf(all[0]?.at || 0))) { Object.assign(d, counted(allByDay[d.key])); backfilled = true }
 
   const days = Object.keys(byDay).sort().slice(-3) // catch up at most 3 days per hour
-  if (!days.length) { if (backfilled) await setJSON(DIARY, diary.slice(-400)); return { diary: 'up to date' } }
+  if (!days.length) { if (backfilled) await setJSON(DIARY, diary.slice(-400)); await redis('SET', 'light:diarychecked', today); return { diary: 'up to date' } }
   const model = await redis('GET', KEYS.model)
   const written = []
   for (const k of days) {
@@ -172,6 +234,7 @@ export async function diaryTick() {
   }
   diary.sort((a, b) => (a.key < b.key ? -1 : 1))
   await setJSON(DIARY, diary.slice(-400))
+  if (Object.keys(byDay).length <= days.length) await redis('SET', 'light:diarychecked', today) // all caught up
   return { diary: written.length ? `wrote ${written.join(', ')}` : 'nothing new' }
 }
 
