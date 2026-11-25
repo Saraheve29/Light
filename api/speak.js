@@ -197,7 +197,7 @@ export default async function handler(req, res) {
       if (!b64) return res.status(404).json({ error: 'Not found' })
       res.setHeader('Content-Type', 'application/octet-stream')
       res.setHeader('Content-Disposition', 'attachment; filename="voice.safetensors"')
-      res.setHeader('Cache-Control', 'public, max-age=86400')
+      res.setHeader('Cache-Control', 'public, max-age=86400, s-maxage=86400') // (Vercel keeps a copy for a day, so his voice print isn't fetched from the database every time he speaks)
       return res.status(200).send(Buffer.from(b64, 'base64'))
     } catch (err) { return res.status(500).json({ error: err.message }) }
   }
