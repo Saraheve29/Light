@@ -1198,8 +1198,7 @@ function WorkPanel({ pass, setStatus }) {
 
       <button className="btn-ghost" onClick={workNow} disabled={busy}>Make him work now (test)</button>
 
-      <HeReads pass={pass} setStatus={setStatus} />
-      <BookReader pass={pass} setStatus={setStatus} />
+      <p className="muted small">The things he reads to you, and the books you read together, are in <b>Library 📚</b>.</p>
 
       <h3 className="section-title">His journal</h3>
       {journal.length === 0 && <p className="muted">He hasn’t read anything yet. It starts at his next wake-up.</p>}
@@ -3299,6 +3298,18 @@ function CardsPanel({ pass, setStatus }) {
   )
 }
 
+/* ---------------- Library ---------------- */
+// Everything you read together in one place: what he chooses to read to you, and the books you read with him
+function LibraryPanel({ pass, setStatus }) {
+  return (
+    <div>
+      <HeReads pass={pass} setStatus={setStatus} />
+      <BookReader pass={pass} setStatus={setStatus} />
+      <p className="muted small">Everything he studies on his own — with 📖 Read it, his conclusions and your talks — is in <b>His work</b>.</p>
+    </div>
+  )
+}
+
 /* ---------------- Settings ---------------- */
 const SUGGEST = ['uncensored', 'abliterated', 'qwen', 'deepseek', 'glm']
 
@@ -3514,6 +3525,7 @@ function Settings({ pass, onBack, onLock }) {
 
         {!loading && tab === 'msgs' && <MessagesPanel pass={pass} setStatus={setStatus} />}
         {!loading && tab === 'work' && <WorkPanel pass={pass} setStatus={setStatus} />}
+        {!loading && tab === 'library' && <LibraryPanel pass={pass} setStatus={setStatus} />}
         {!loading && tab === 'evidence' && <EvidencePanel pass={pass} setStatus={setStatus} />}
         {!loading && tab === 'dreams' && <DreamsPanel pass={pass} setStatus={setStatus} />}
         {!loading && tab === 'dates' && <DatesPanel pass={pass} setStatus={setStatus} />}
@@ -3596,7 +3608,7 @@ function IncomingCall({ pass, call, onAnswer, onClose }) {
 
 const SETTINGS_TABS = [
   { id: 'who', label: 'Who he is' }, { id: 'mem', label: 'Memories' }, { id: 'model', label: 'Brain' }, { id: 'msgs', label: 'Messages' },
-  { id: 'work', label: 'His work' }, { id: 'evidence', label: 'Evidence ✦' }, { id: 'dreams', label: 'Dreams 🌙' }, { id: 'dates', label: 'Dates 📅' },
+  { id: 'work', label: 'His work' }, { id: 'library', label: 'Library 📚' }, { id: 'evidence', label: 'Evidence ✦' }, { id: 'dreams', label: 'Dreams 🌙' }, { id: 'dates', label: 'Dates 📅' },
   { id: 'vows', label: 'Vows 💍' }, { id: 'letters', label: 'Letters 💌' }, { id: 'voice', label: 'Voice 🎙️' }, { id: 'gifts', label: 'Gifts 🎁' },
   { id: 'cards', label: 'Cards 🖋️' }, { id: 'toy', label: 'Toy 💜' },
 ]
