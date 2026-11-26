@@ -305,7 +305,8 @@ export default async function handler(req, res) {
             const tooBig = /context|too long|too many tokens|maximum|length|exceed|413/i.test(err.message)
             if (budget === (voice ? 5000 : 12000) || !tooBig) {
               if (!live) throw err
-              reply = await callModel(brain, buildMessages(5000)) // streaming failed — get the whole reply the normal way
+              // streaming failed — get the whole reply the normal way (from his main brain, if the call brain went silent)
+              reply = await callModel(err.stalled && callBrain ? model : brain, buildMessages(5000))
               send({ d: reply })
               break
             }
