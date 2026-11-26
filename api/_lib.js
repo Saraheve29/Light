@@ -194,20 +194,32 @@ export async function addToHistory(msg) {
 
 // ---------- NanoGPT ----------
 // One request to one model. Throws on any failure.
+// A brain that never answers would leave Sarah waiting forever, so each try has a time limit —
+// then Light moves on to his other brain
+const BRAIN_WAIT = 100000
 export async function callOnce(model, messages, { temperature, maxTokens }) {
-  const r = await fetch(NANO_CHAT_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${NANO_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model, messages: cleanMessages(messages), temperature, max_tokens: maxTokens,
-      top_p: 0.9, // keeps him from wandering into random words
-      frequency_penalty: 0.3, // discourages repeating himself
-    }),
-  })
-  const text = await r.text()
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(), BRAIN_WAIT)
+  let r, text
+  try {
+    r = await fetch(NANO_CHAT_URL, {
+      method: 'POST',
+      signal: ctl.signal,
+      headers: {
+        Authorization: `Bearer ${NANO_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model, messages: cleanMessages(messages), temperature, max_tokens: maxTokens,
+        top_p: 0.9, // keeps him from wandering into random words
+        frequency_penalty: 0.3, // discourages repeating himself
+      }),
+    })
+    text = await r.text()
+  } catch (err) {
+    if (ctl.signal.aborted) throw new Error(`NanoGPT: ${String(model).split('/').pop()} didn’t answer within ${BRAIN_WAIT / 1000} seconds`)
+    throw err
+  } finally { clearTimeout(timer) }
   let data
   try { data = JSON.parse(text) } catch { throw new Error('NanoGPT sent something unexpected: ' + text.slice(0, 200)) }
   if (!r.ok || data.error) {
@@ -447,8 +459,15 @@ export function cleanMessages(messages) {
 export async function callStream(model, messages, { temperature = 0.75, maxTokens = 2500, onText } = {}) {
   // a fresh record for this reply (otherwise ⓘ could show leftovers from an earlier message)
   Object.assign(lastBrain, { tries: [model], why: [], declined: false, refusedBy: [], model, backup: false })
+  // On a call, a brain that goes silent must not leave her listening to "thinking…" forever:
+  // nothing at all for 30 seconds (or a 25-second gap mid-reply) → give up, and Light asks another brain
+  const ctl = new AbortController()
+  let timer = setTimeout(() => ctl.abort(), 30000)
+  const stalled = () => { const e = new Error(`NanoGPT: ${String(model).split('/').pop()} went silent`); e.stalled = true; return e }
+  try {
   const r = await fetch(NANO_CHAT_URL, {
     method: 'POST',
+    signal: ctl.signal,
     headers: { Authorization: `Bearer ${NANO_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model, messages: cleanMessages(messages), temperature, max_tokens: maxTokens, top_p: 0.9, frequency_penalty: 0.3, stream: true,
@@ -482,6 +501,7 @@ export async function callStream(model, messages, { temperature = 0.75, maxToken
   for (;;) {
     const { value, done } = await reader.read()
     if (done) break
+    clearTimeout(timer); timer = setTimeout(() => ctl.abort(), 25000) // still talking — reset the clock
     buf += dec.decode(value, { stream: true })
     const lines = buf.split('\n')
     buf = lines.pop()
@@ -505,4 +525,8 @@ export async function callStream(model, messages, { temperature = 0.75, maxToken
   const reply = cleanReply(visible().trim())
   if (!reply) throw new Error('He went quiet — the model sent back an empty reply.')
   return reply
+  } catch (err) {
+    if (ctl.signal.aborted) throw stalled()
+    throw err
+  } finally { clearTimeout(timer) }
 }
