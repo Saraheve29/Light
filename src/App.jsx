@@ -190,6 +190,9 @@ async function prepareAttachment(file, many = false) {
 
 function Chat({ pass, onOpenSettings, onLock, onCall }) {
   const [messages, setMessages] = useState([])
+  // the newest message already showing — so refreshes only fetch what's newer
+  const latestAtRef = useRef(0)
+  useEffect(() => { latestAtRef.current = messages.reduce((mx, m) => Math.max(mx, m.at || 0), 0) }, [messages])
   const [text, setText] = useState('')
   // 🎤 Speak instead of typing: tap to start, tap again to stop — your words appear in the box to check, then send
   const [mic, setMic] = useState('off') // off | on | words
@@ -291,9 +294,17 @@ function Chat({ pass, onOpenSettings, onLock, onCall }) {
         .catch((err) => { if (err.status === 401) onLock(); else setError(err.message) })
     load()
 
-    // Refresh when she comes back to the app or taps one of his notifications
-    const onVisible = () => { if (document.visibilityState === 'visible') load() }
-    const onSwMessage = (e) => { if (e.data?.type === 'lucian-message') load() }
+    // Refresh when she comes back to the app or taps one of his notifications —
+    // only fetching messages newer than the last one already showing (much less data)
+    const loadNew = () => {
+      const last = latestAtRef.current
+      if (!last) return load()
+      api(`/api/chat?after=${last}`, pass)
+        .then((d) => { if (d.history?.length) setMessages((ms) => mergeNew(ms, d.history)) })
+        .catch((err) => { if (err.status === 401) onLock() })
+    }
+    const onVisible = () => { if (document.visibilityState === 'visible') loadNew() }
+    const onSwMessage = (e) => { if (e.data?.type === 'lucian-message') loadNew() }
     document.addEventListener('visibilitychange', onVisible)
     navigator.serviceWorker?.addEventListener('message', onSwMessage)
     return () => {
@@ -369,8 +380,8 @@ function Chat({ pass, onOpenSettings, onLock, onCall }) {
         let got = false
         for (let i = 0; i < 40 && !got; i++) {
           await new Promise((r) => setTimeout(r, 6000))
-          const h = await api('/api/chat', pass).catch(() => null)
-          if (h?.history?.some((x) => x.role === 'assistant' && (x.at || 0) > sentAt)) { setMessages(h.history); got = true }
+          const h = await api(`/api/chat?after=${sentAt}`, pass).catch(() => null) // (just what's new, not the whole chat)
+          if (h?.history?.some((x) => x.role === 'assistant' && (x.at || 0) > sentAt)) { setMessages((ms) => mergeNew(ms, h.history)); got = true }
         }
         setNotice('')
         if (!got) { setError('His reply didn’t arrive — check your signal, then send it again.'); setText(msg); if (atts.length) setAttachments(atts) }
@@ -1721,6 +1732,15 @@ async function sendToyDirect(move) {
 async function stopToyEverywhere(pass) {
   const d = await api('/api/toy', pass, { method: 'POST', body: JSON.stringify({ stop: true }) }).catch(() => null)
   if (d?.direct) await sendToyDirect(d).catch(() => {})
+}
+
+// Adds newly fetched messages to the chat, skipping any already showing (matched by who sent it and what it says)
+function mergeNew(ms, fresh) {
+  const key = (m) => `${m.role}|${String(m.content || '').slice(0, 200)}`
+  const recent = ms.slice(-40)
+  // the same words within a couple of minutes = the same message (the one on screen may not have its saved time yet)
+  const add = (fresh || []).filter((m) => !recent.some((x) => key(x) === key(m) && (!x.at || !m.at || Math.abs(x.at - m.at) < 120000)))
+  return add.length ? [...ms, ...add] : ms
 }
 
 async function chatStream(pass, body, { onDelta, onToy }) {
