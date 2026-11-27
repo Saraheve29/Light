@@ -139,6 +139,13 @@ export default async function handler(req, res) {
   try {
     // Load the conversation for the screen
     if (req.method === 'GET') {
+      // Only what's new since the last message the app already has (switching back to Light, waiting for a reply)
+      // — re-sending the last 100 messages, photos and all, every time was most of Light's data use
+      const after = Number(req.query?.after || 0)
+      if (after) {
+        const recent = await getHistory(30)
+        return res.status(200).json({ history: recent.filter((m) => (m.at || 0) > after), partial: true })
+      }
       const history = await getHistory(100)
       return res.status(200).json({ history })
     }
