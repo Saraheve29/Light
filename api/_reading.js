@@ -19,7 +19,7 @@ async function getJSONFrom(url) {
   if (!r.ok) throw new Error(`${new URL(url).hostname} answered ${r.status}`)
   return r.json()
 }
-const words = (s) => String(s || '').toLowerCase().split(/[^a-z0-9']+/).filter((w) => w.length > 2)
+const words = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().split(/[^a-z0-9']+/).filter((w) => w.length > 2) // (Rūmī → rumi)
 const likeName = (a, b) => { const x = words(a); return !x.length || x.some((w) => words(b).includes(w)) }
 
 // A passage of at most ~5,000 characters, ending at a paragraph or sentence
@@ -172,4 +172,71 @@ export async function readingTick() {
   if (recent.length < 2) return { reading: 'she hasn’t been here today' }
   const r = await chooseReading({ auto: true })
   return { reading: `chose ${r.title}` }
+}
+
+// ---------- Reading aloud on a call ----------
+// On a call she can say "read me some Rumi", "read me tonight's reading" or "keep reading",
+// and he reads the REAL words aloud in full (never from memory), then carries on talking with her.
+const CALLREAD = 'light:callreading' // where he's up to in a book he's reading her on calls
+
+export function readRequest(message) {
+  const m = String(message || '').toLowerCase().replace(/[’']/g, "'").replace(/[.!?]+$/g, '').trim()
+  if (/\b(keep|carry on|continue|go on)\b.{0,25}\bread|\bread(ing)?\b.{0,10}\b(more|on)\b|\bnext (page|bit|part|chapter|poem)\b/.test(m)) return { more: true }
+  const asks = /\b(can you|could you|would you|will you|please|lucian,?)\s+(please\s+)?read\b|\bread (me|to me|to us|us|for me)\b|^read\b|\brecite\b/.test(m)
+  if (!asks) return null
+  let q = m.replace(/^[\s\S]*?\b(read|recite)\b\s*(me|to me|to us|us|for me)?\s*/, '')
+  q = q.replace(/\b(as|while|till|until|so) i (sleep|fall asleep|drift off|go to sleep)\b.*$/, '')
+    .replace(/\b(to sleep|please|for me|tonight|now|again|my love|baby|babe|husband|darling)\b/g, ' ')
+    .replace(/^\s*(some|something|a|an|the|one of|any)\b\s*/g, '')
+    .replace(/\b(poems?|poetry|verses?)\s*(by|from|of)?\b/g, ' ')
+    .replace(/\s+/g, ' ').trim()
+  if (!q || /^(something|anything|it|that|this|your (reading|choice)|what you chose|tonight's reading|the reading)$/.test(q) || /\b(reading|you chose)\b/.test(q)) return { latest: true }
+  return { query: q }
+}
+
+async function loadCallBook(state) {
+  const text = await loadBookText(state.book)
+  const chapters = findChapters(text)
+  const page = bookPage(text, state.pos || 0, chapters)
+  await setJSON(CALLREAD, { book: state.book, pos: page.nextPos ?? null })
+  return { title: state.book.title, author: state.book.author || '', text: page.text, chapter: page.chapter || '', more: page.nextPos != null }
+}
+
+async function findForCall(q) {
+  // a poet or poem in the free poetry library
+  for (const url of [`https://poetrydb.org/author/${encodeURIComponent(q)}`, `https://poetrydb.org/title/${encodeURIComponent(q)}`]) {
+    try {
+      const d = await getJSONFrom(url)
+      if (Array.isArray(d) && d.length) {
+        const fits = d.filter((p) => p.lines?.length && p.lines.length < 120 && (likeName(q, p.author) || likeName(q, p.title)))
+        const p = fits[Math.floor(Math.random() * fits.length)]
+        if (p) return { title: p.title, author: p.author, text: p.lines.join('\n').trim() }
+      }
+    } catch {}
+  }
+  // a book (Rumi's Masnavi, the Tao Te Ching, Gibran…) — read from the start of the first chapter, and remember where he got to
+  const book = await findBook(q).catch(() => null)
+  if (book && likeName(q, `${book.title} ${book.author}`)) {
+    const text = await loadBookText(book)
+    const chapters = findChapters(text)
+    return loadCallBook({ book: { id: book.id, title: book.title, author: book.author, url: book.url }, pos: chapters[0]?.pos || 0 })
+  }
+  const ws = await findWikisource(q, '').catch(() => null)
+  return ws ? { title: ws.title, author: ws.author, text: ws.text } : null
+}
+
+// What to read her on this call (null = she didn't ask to be read to)
+export async function readingForCall(message) {
+  const want = readRequest(message)
+  if (!want) return null
+  if (want.more) {
+    const st = await getJSON(CALLREAD, null)
+    if (st?.book && st.pos != null) return loadCallBook(st)
+    return { notFound: 'There’s nothing more to read from where you left off — offer to read her something new.' }
+  }
+  if (want.latest) {
+    const last = (await getReadings()).slice(-1)[0] || (await chooseReading().catch(() => null))
+    return last ? { title: last.title, author: last.author, text: last.text, chapter: last.chapter || '' } : { notFound: 'Nothing could be found to read right now.' }
+  }
+  return (await findForCall(want.query)) || { notFound: `"${want.query}" couldn't be found in the free libraries (they only hold older, out-of-copyright works).` }
 }
