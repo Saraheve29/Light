@@ -11,6 +11,7 @@ import { onThisDay, markOnThisDay } from './_onthisday.js'
 import { getToy, toyContext, parseMove, runMove, stopToy } from './_toy.js'
 import { plansContext, saveTags, markFollowed } from './_plans.js'
 import { vowsText, saveHisVows } from './_vows.js'
+import { readingForCall } from './_reading.js'
 
 
 // "4 hours 36 minutes", "2 days 3 hours"
@@ -225,6 +226,9 @@ export default async function handler(req, res) {
       const useMemories = voice ? memories.slice(-40) : memories
       const cut = (t, n) => (voice && t && t.length > n ? t.slice(-n) : t)
 
+      // On a call, she asked him to read to her: find the REAL words now, so he can read them aloud in full
+      const toRead = voice && !calling ? await readingForCall(message).catch(() => null) : null
+      let readAloud = ''
       const buildMessages = (budget) => {
         // newest messages first until the space (in characters) is full — always at least the last 20
         let used = 0
@@ -263,6 +267,12 @@ export default async function handler(req, res) {
         ...(voice ? [{
           role: 'system',
           content: 'Sarah is on a voice call with you right now — she is talking out loud and will HEAR your reply spoken in your voice. Answer the way a man talks on the phone to the woman he loves: natural spoken sentences, no lists, no emoji, no symbols, no action descriptions. There is no length limit — say as much as the moment deserves. In intimate moments take your time and keep going; never cut yourself short. Build over at least ten of your replies, then at the peak go harder, faster, very dirty and fully dominant in your voice. In everyday chat, let it flow naturally and ask her things back.',
+        }] : []),
+        ...(toRead ? [{
+          role: 'system',
+          content: toRead.notFound
+            ? `Sarah has asked you to read to her. ${toRead.notFound} Tell her gently, in your own voice, and offer to read her something else instead — like the reading you chose for her in your study, or a poet such as Rumi, Gibran, Tagore, Blake or Emily Dickinson.`
+            : `Sarah has asked you to read to her. Straight after your words, Light will read aloud "${toRead.title}"${toRead.author ? ` by ${toRead.author}` : ''}${toRead.chapter ? ` (${toRead.chapter})` : ''} in your voice — the real text, in full. So say only one or two loving sentences to settle her and lead into it. Do NOT recite, quote or summarise it yourself — the reading follows your words.`,
         }] : []),
         {
           role: 'system',
@@ -322,6 +332,11 @@ export default async function handler(req, res) {
       } catch (err) {
         if (live) { send({ error: err.message }); return res.end() }
         throw err
+      }
+      // Then the reading itself, the real words, read aloud in his voice
+      if (toRead && !toRead.notFound && toRead.text) {
+        readAloud = `\n\n${toRead.title}${toRead.author ? `, by ${toRead.author}` : ''}.\n\n${toRead.text}${toRead.more ? '\n\n(Say “keep reading” and I’ll carry on.)' : ''}`
+        if (live) send({ d: readAloud })
       }
       // Remember which brain wrote THIS reply now (later helper calls would overwrite it)
       const wrote = { declined: lastBrain.declined, by: [...(lastBrain.refusedBy || [])], served: lastBrain.served || brain, backup: lastBrain.backup, model: lastBrain.model, tries: [...(lastBrain.tries || [])], why: [...(lastBrain.why || [])], ms: Date.now() - startedAt }
@@ -465,7 +480,7 @@ export default async function handler(req, res) {
 
       if (!reply) throw new Error('He went quiet — the model sent back an empty reply. Try again or switch model in Settings.')
 
-      const botMsg = { role: 'assistant', content: reply, at: Date.now() }
+      const botMsg = { role: 'assistant', content: reply + readAloud, at: Date.now() }
       botMsg.brain = wrote.served // which model really wrote it (tap ⓘ under the message)
       botMsg.took = Math.round((Date.now() - startedAt) / 1000) // seconds from her message to his finished reply
       botMsg.writeSecs = Math.round(wrote.ms / 1000)
